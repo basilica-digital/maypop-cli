@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.1.2 - 2026-09-21
+
 ### Fixed
 
 - Reuse app metadata from an existing `maypop.toml` during initialization.

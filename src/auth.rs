@@ -1,6 +1,7 @@
 //! Browser approval flow used by `maypop auth`.
 
 use crate::credentials::{CredentialUser, Credentials};
+use crate::http;
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -53,12 +54,13 @@ pub(crate) async fn authenticate(
     no_browser: bool,
 ) -> Result<Credentials> {
     let api_url = api_url.trim_end_matches('/');
-    let response = client
-        .post(format!("{api_url}/cli/auth/start"))
-        .json(&StartRequest { device_name })
-        .send()
-        .await
-        .context("could not start Maypop authentication")?;
+    let response = http::json(
+        client.post(format!("{api_url}/cli/auth/start")),
+        &StartRequest { device_name },
+    )?
+    .send()
+    .await
+    .context("could not start Maypop authentication")?;
     let start = successful_json::<StartResponse>(response).await?;
 
     println!("Authorize this device in Maypop:");
@@ -80,14 +82,15 @@ pub(crate) async fn authenticate(
             bail!("authentication expired; run `maypop auth` again");
         }
         tokio::time::sleep(Duration::from_secs(interval)).await;
-        let response = client
-            .post(format!("{api_url}/cli/auth/token"))
-            .json(&TokenRequest {
+        let response = http::json(
+            client.post(format!("{api_url}/cli/auth/token")),
+            &TokenRequest {
                 device_code: &start.device_code,
-            })
-            .send()
-            .await
-            .context("lost connection while waiting for Maypop approval")?;
+            },
+        )?
+        .send()
+        .await
+        .context("lost connection while waiting for Maypop approval")?;
         match successful_json::<TokenResponse>(response).await? {
             TokenResponse::Pending {
                 interval: server_interval,

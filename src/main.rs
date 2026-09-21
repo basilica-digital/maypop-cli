@@ -1,6 +1,7 @@
 mod auth;
 mod bundle_upload;
 mod credentials;
+mod http;
 mod project;
 mod user_commands;
 

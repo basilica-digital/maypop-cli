@@ -154,6 +154,20 @@ different Git origin.
 Use `--no-browser` to print the approval URL without opening it. Set
 `MAYPOP_CONFIG_DIR` to move the profiles file.
 
+## Authenticated SDK development
+
+The Vite, Rsbuild, and Next.js integrations in
+`@basilica-digital/maypop-sdk` can use the CLI login for authenticated local
+development. Their developer-local `.maypop/dev.json` selects hybrid or
+connected mode and may name a profile. The SDK asks the CLI to mint a
+short-lived session for the app recorded in the repository; app access is
+checked by Maypop, and the saved CLI credential is never handed to browser
+code.
+
+When no profile is named, the same rules as repository commands apply: the
+repository's API URL selects a matching credential, with `MAYPOP_PROFILE`
+available when more than one account uses that endpoint.
+
 Internal diagnostics and administrative operations are excluded from normal
 builds. Maintainers can compile them explicitly with:
 

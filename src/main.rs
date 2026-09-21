@@ -87,6 +87,9 @@ enum Commands {
     /// Git credential-helper protocol; configured automatically by `maypop init`
     #[command(hide = true)]
     GitCredential { operation: String },
+    /// Mint an app-scoped session for the local SDK development host
+    #[command(name = "sdk-session", hide = true)]
+    SdkSession,
     #[cfg(feature = "admin")]
     /// Check the liveness probe of the backend
     Health,
@@ -321,6 +324,9 @@ async fn run() -> Result<()> {
         Commands::GitCredential { operation } => {
             let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
             user_commands::git_credential(&operation, &api_url, profile.as_deref())
+        }
+        Commands::SdkSession => {
+            user_commands::sdk_session(profile.as_deref(), token.as_deref()).await
         }
         #[cfg(feature = "admin")]
         command => {
@@ -664,6 +670,17 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn sdk_session_is_hidden_but_accepts_profile_selection() {
+        let cli = Cli::try_parse_from(["maypop", "--profile", "dev", "sdk-session"]).unwrap();
+
+        assert_eq!(cli.profile.as_deref(), Some("dev"));
+        assert!(matches!(cli.command, Commands::SdkSession));
+        assert!(Cli::command()
+            .find_subcommand("sdk-session")
+            .is_some_and(clap::Command::is_hide_set));
     }
 
     #[test]

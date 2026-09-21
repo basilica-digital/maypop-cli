@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Let the Maypop SDK create app-scoped development sessions from the authenticated profile without exposing CLI credentials to browser code.
+
 ## 0.1.2 - 2026-09-21
 
 ### Fixed

@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Build and publish Maypop apps from the command line."
 readme = "README.md"
+license = "Apache-2.0"
+repository = "https://github.com/basilica-digital/maypop-cli"
 publish = false
 
 [features]

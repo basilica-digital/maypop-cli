@@ -11,14 +11,15 @@ checksum for:
 - macOS Apple Silicon and Intel.
 - Windows x86-64.
 
-Download the archive for your platform from the repository's Releases page,
+Download the archive for your platform from the
+[latest GitHub release](https://github.com/basilica-digital/maypop-cli/releases/latest),
 verify the adjacent `.sha256` file, extract it, and place `maypop` (or
 `maypop.exe`) somewhere on `PATH`.
 
-To install from a source checkout instead:
+To install directly from the source repository instead:
 
 ```sh
-cargo install --locked --path .
+cargo install --locked --git https://github.com/basilica-digital/maypop-cli
 ```
 
 Confirm the installed version:
@@ -157,7 +158,18 @@ cargo install --locked --path . --features admin
 
 ## Release
 
-Update the version in `Cargo.toml` and `CHANGELOG.md`, commit the change, then
-push a matching tag such as `v0.2.0`. GitHub Actions verifies that the tag and
-package versions match, runs the test suite, builds the release archives, and
-creates the GitHub release with generated notes.
+The package version in `Cargo.toml` is authoritative. To release `0.2.0`:
+
+1. Set `version = "0.2.0"` in `Cargo.toml`.
+2. Run `cargo check` to update the package entry in `Cargo.lock`.
+3. Move the relevant entries in `CHANGELOG.md` under a dated `0.2.0` heading.
+4. Commit those files with `chore: release v0.2.0`.
+5. Create an annotated `v0.2.0` tag and push both `main` and the tag.
+
+The tag is the release trigger. GitHub Actions rejects it unless it exactly
+matches the package version, runs the tests, builds every release archive and
+checksum, and creates the GitHub Release with generated notes.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

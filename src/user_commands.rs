@@ -80,6 +80,47 @@ pub(crate) fn required_token(
     })
 }
 
+fn resolve_initial_app(
+    repository: &Path,
+    configured: Option<project::AppConfig>,
+    name: Option<&str>,
+    description: Option<&str>,
+    visibility: Option<&str>,
+) -> Result<project::AppConfig> {
+    let mut app = configured.unwrap_or_default();
+    app.name = name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or(app.name)
+        .or_else(|| {
+            repository
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+        });
+    app.description = description.map(str::to_string).or(app.description);
+    app.visibility = Some(
+        visibility
+            .map(str::to_string)
+            .or(app.visibility)
+            .unwrap_or_else(|| "private".into()),
+    );
+    app.link_access.get_or_insert_with(|| {
+        if app.visibility.as_deref() == Some("public") {
+            "view".into()
+        } else {
+            "request".into()
+        }
+    });
+    app.allow_remixing.get_or_insert(true);
+    app.tags.get_or_insert_with(Vec::new);
+    if app.name.is_none() {
+        bail!("could not infer an app name; pass --name or set app.name in maypop.toml");
+    }
+    Ok(app)
+}
+
 /// Create an app identity and connect the selected directory to Maypop Git.
 pub(crate) async fn init(
     api_url: &str,
@@ -88,7 +129,7 @@ pub(crate) async fn init(
     path: &Path,
     name: Option<&str>,
     description: Option<&str>,
-    visibility: &str,
+    visibility: Option<&str>,
 ) -> Result<()> {
     let repository = prepare_repository(path)?;
     if git_config(&repository, APP_ID_KEY)?.is_some() {
@@ -107,38 +148,29 @@ pub(crate) async fn init(
         bail!("your saved login predates Git access; run `maypop auth` again");
     }
     let app_id = uuid::Uuid::new_v4().to_string();
-    let app_name = name
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            repository
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(str::to_string)
-        })
-        .context("could not infer an app name; pass --name")?;
-    let initial_app = project::AppConfig {
-        name: Some(app_name.clone()),
-        description: description.map(str::to_string),
-        visibility: Some(visibility.to_string()),
-        link_access: Some(if visibility == "public" {
-            "view".into()
-        } else {
-            "request".into()
-        }),
-        allow_remixing: Some(true),
-        tags: Some(Vec::new()),
-        thumbnail: None,
-    };
+    let initial_app = resolve_initial_app(
+        &repository,
+        project::existing_app_config(&repository)?,
+        name,
+        description,
+        visibility,
+    )?;
+    let app_name = initial_app
+        .name
+        .clone()
+        .context("initial app name is missing")?;
+    let app_visibility = initial_app
+        .visibility
+        .clone()
+        .context("initial app visibility is missing")?;
     let config_path = project::create_config(&repository, Some(&initial_app))?;
     let response = http_request::json(
         http.post(format!("{}/cli/apps", trim_url(api_url))),
         &json!({
             "id": app_id,
-            "name": app_name,
-            "description": description,
-            "visibility": visibility,
+            "name": &app_name,
+            "description": initial_app.description.as_deref(),
+            "visibility": &app_visibility,
         }),
     )?
     .send()
@@ -675,6 +707,73 @@ fn trim_url(url: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_uses_configured_app_metadata() {
+        let configured = project::AppConfig {
+            name: Some("Configured app".into()),
+            description: Some("Configured description".into()),
+            visibility: Some("unlisted".into()),
+            link_access: Some("use".into()),
+            allow_remixing: Some(false),
+            tags: Some(vec!["design".into()]),
+            thumbnail: Some("assets/thumbnail.png".into()),
+        };
+
+        let resolved = resolve_initial_app(
+            Path::new("/tmp/directory-name"),
+            Some(configured.clone()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(resolved, configured);
+    }
+
+    #[test]
+    fn init_flags_override_configured_creation_metadata() {
+        let configured = project::AppConfig {
+            name: Some("Configured app".into()),
+            description: Some("Configured description".into()),
+            visibility: Some("unlisted".into()),
+            link_access: Some("view".into()),
+            allow_remixing: Some(false),
+            tags: Some(vec!["design".into()]),
+            thumbnail: None,
+        };
+
+        let resolved = resolve_initial_app(
+            Path::new("/tmp/directory-name"),
+            Some(configured),
+            Some("CLI app"),
+            Some("CLI description"),
+            Some("public"),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.name.as_deref(), Some("CLI app"));
+        assert_eq!(resolved.description.as_deref(), Some("CLI description"));
+        assert_eq!(resolved.visibility.as_deref(), Some("public"));
+        assert_eq!(resolved.link_access.as_deref(), Some("view"));
+        assert_eq!(resolved.allow_remixing, Some(false));
+        assert_eq!(resolved.tags, Some(vec!["design".into()]));
+    }
+
+    #[test]
+    fn init_defaults_metadata_without_configuration_or_flags() {
+        let resolved =
+            resolve_initial_app(Path::new("/tmp/directory-name"), None, None, None, None).unwrap();
+
+        assert_eq!(resolved.name.as_deref(), Some("directory-name"));
+        assert_eq!(resolved.description, None);
+        assert_eq!(resolved.visibility.as_deref(), Some("private"));
+        assert_eq!(resolved.link_access.as_deref(), Some("request"));
+        assert_eq!(resolved.allow_remixing, Some(true));
+        assert_eq!(resolved.tags, Some(Vec::new()));
+        assert_eq!(resolved.thumbnail, None);
+    }
 
     #[test]
     fn git_remote_uses_the_server_url() {

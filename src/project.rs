@@ -120,6 +120,15 @@ pub(crate) fn app_config(repository: &Path) -> Result<Option<AppConfig>> {
     parse_app_config(&document)
 }
 
+/// Read app metadata when the repository already has a `maypop.toml`.
+pub(crate) fn existing_app_config(repository: &Path) -> Result<Option<AppConfig>> {
+    let path = repository.join(CONFIG_FILE);
+    if !path.exists() {
+        return Ok(None);
+    }
+    app_config(repository)
+}
+
 /// Resolve the configured adapter, run its build, and validate its output.
 pub(crate) fn build(repository: &Path) -> Result<BuildPlan> {
     let config = load_config(repository)?;
@@ -545,6 +554,37 @@ mod tests {
             Framework::Rsbuild
         );
         assert_eq!(app_config(&directory).unwrap(), Some(app));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn existing_app_configuration_is_not_rewritten() {
+        let directory =
+            std::env::temp_dir().join(format!("maypop-project-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(CONFIG_FILE);
+        let original = concat!(
+            "# Keep this comment and ordering.\n",
+            "[build]\n",
+            "framework = \"static\"\n",
+            "\n[app]\n",
+            "visibility = \"unlisted\"\n",
+            "name = \"Configured app\"\n",
+        );
+        std::fs::write(&path, original).unwrap();
+
+        let configured = existing_app_config(&directory).unwrap().unwrap();
+        assert_eq!(configured.name.as_deref(), Some("Configured app"));
+        assert_eq!(configured.visibility.as_deref(), Some("unlisted"));
+
+        let replacement = AppConfig {
+            name: Some("CLI override".into()),
+            visibility: Some("public".into()),
+            ..AppConfig::default()
+        };
+        create_config(&directory, Some(&replacement)).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
 
         std::fs::remove_dir_all(directory).unwrap();
     }

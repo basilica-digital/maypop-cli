@@ -50,8 +50,8 @@ The default binary has seven product commands:
 - `maypop auth` signs in through the browser.
 - `maypop init` creates an unpublished app, initializes the current directory
   as a Git repository when needed, adds the Maypop Git remote, and installs a
-  repository-local credential helper. It also creates `maypop.toml` with the
-  detected framework adapter.
+  repository-local credential helper. It reuses initial app metadata from an
+  existing `maypop.toml`, or creates one with the detected framework adapter.
 - `maypop publish` requires a clean worktree, builds the app, pushes the current
   Git `HEAD`, uploads the adapter's static output directly to object storage,
   and promotes that artifact as the app's next immutable version.
@@ -91,6 +91,11 @@ left unchanged on Maypop. Supported reach values are `private`, `unlisted`, or
 `public` for `visibility`, and `request`, `view`, or `use` for `link_access`.
 The optional thumbnail must be an image inside the repository. Publishing does
 not update app metadata implicitly.
+
+When this file exists before `maypop init`, its name, description, and
+visibility seed the new remote app. Explicit `--name`, `--description`, and
+`--visibility` arguments override the corresponding configured values. Without
+either source, the name defaults to the directory and visibility to `private`.
 
 Vite and Rsbuild run the package manager's `build` script and upload `dist/`
 with SPA document fallback. Next.js runs the same script and uploads its `out/`

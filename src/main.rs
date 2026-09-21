@@ -54,15 +54,15 @@ enum Commands {
         /// Directory to initialize
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// App name; defaults to the directory name
+        /// App name; overrides maypop.toml and otherwise defaults to the directory name
         #[arg(short, long)]
         name: Option<String>,
-        /// App description
+        /// App description; overrides maypop.toml
         #[arg(short, long)]
         description: Option<String>,
-        /// Initial app visibility
-        #[arg(long, default_value = "private", value_parser = ["private", "unlisted", "public"])]
-        visibility: String,
+        /// Initial app visibility; overrides maypop.toml and otherwise defaults to private
+        #[arg(long, value_parser = ["private", "unlisted", "public"])]
+        visibility: Option<String>,
     },
     /// Build the app and publish it with the current Git HEAD
     Publish {
@@ -290,7 +290,7 @@ async fn run() -> Result<()> {
                 &path,
                 name.as_deref(),
                 description.as_deref(),
-                &visibility,
+                visibility.as_deref(),
             )
             .await
         }
@@ -663,6 +663,41 @@ mod tests {
                 no_browser: true,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn init_metadata_flags_are_optional_overrides() {
+        let cli = Cli::try_parse_from(["maypop", "init"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Init {
+                name: None,
+                description: None,
+                visibility: None,
+                ..
+            }
+        ));
+
+        let cli = Cli::try_parse_from([
+            "maypop",
+            "init",
+            "--name",
+            "CLI app",
+            "--description",
+            "CLI description",
+            "--visibility",
+            "public",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Init {
+                name: Some(name),
+                description: Some(description),
+                visibility: Some(visibility),
+                ..
+            } if name == "CLI app" && description == "CLI description" && visibility == "public"
         ));
     }
 }

@@ -5,7 +5,7 @@ use crate::http as http_request;
 use crate::{bundle_upload, project};
 use anyhow::{bail, Context, Result};
 use reqwest::{header, Client, Url};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -42,29 +42,6 @@ struct AppInfo {
     thumbnail_cid: Option<String>,
     latest_version: i32,
     stable_version: i32,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AppSessionTokens {
-    session_id: String,
-    token: String,
-    expires_in: i64,
-    refresh_token: String,
-    scopes: String,
-}
-
-/// Machine-readable app session handed to the local SDK development host.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SdkSession {
-    api_url: String,
-    app_id: String,
-    session_id: String,
-    token: String,
-    expires_in: i64,
-    refresh_token: String,
-    scopes: String,
 }
 
 struct AppConnection {
@@ -330,35 +307,6 @@ pub(crate) async fn info(profile: Option<&str>, explicit_token: Option<&str>) ->
         .context("could not load the Maypop app")?;
     let app = successful_json::<AppInfo>(response).await?;
     print_app_info(&app, &connection.api_url);
-    Ok(())
-}
-
-/// Mint a scoped app session for an SDK development host without exposing the CLI credential.
-pub(crate) async fn sdk_session(profile: Option<&str>, explicit_token: Option<&str>) -> Result<()> {
-    let connection = app_connection(profile, explicit_token)?;
-    let response = http_request::json(
-        connection
-            .http
-            .post(format!("{}/app-sessions", trim_url(&connection.api_url))),
-        &serde_json::json!({
-            "appId": connection.app_id,
-            "deviceLabel": "Maypop SDK development",
-        }),
-    )?
-    .send()
-    .await
-    .context("could not create an authenticated SDK development session")?;
-    let session = successful_json::<AppSessionTokens>(response).await?;
-    let output = SdkSession {
-        api_url: trim_url(&connection.api_url).to_string(),
-        app_id: connection.app_id,
-        session_id: session.session_id,
-        token: session.token,
-        expires_in: session.expires_in,
-        refresh_token: session.refresh_token,
-        scopes: session.scopes,
-    };
-    println!("{}", serde_json::to_string(&output)?);
     Ok(())
 }
 

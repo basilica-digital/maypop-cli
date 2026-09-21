@@ -1,6 +1,7 @@
 //! User-facing app workflows built around a normal local Git repository.
 
 use crate::credentials::{self, CredentialUser};
+use crate::http as http_request;
 use crate::{bundle_upload, project};
 use anyhow::{bail, Context, Result};
 use reqwest::{header, Client, Url};
@@ -131,17 +132,18 @@ pub(crate) async fn init(
         thumbnail: None,
     };
     let config_path = project::create_config(&repository, Some(&initial_app))?;
-    let response = http
-        .post(format!("{}/cli/apps", trim_url(api_url)))
-        .json(&json!({
+    let response = http_request::json(
+        http.post(format!("{}/cli/apps", trim_url(api_url))),
+        &json!({
             "id": app_id,
             "name": app_name,
             "description": description,
             "visibility": visibility,
-        }))
-        .send()
-        .await
-        .context("could not create the Maypop app")?;
+        }),
+    )?
+    .send()
+    .await
+    .context("could not create the Maypop app")?;
     let created = successful_json::<CreateAppResponse>(response).await?;
     let remote = git_remote_url(
         git_server_url(&user, api_url).as_str(),
@@ -235,16 +237,17 @@ pub(crate) async fn publish(
         build.routing,
     )
     .await?;
-    let response = http
-        .post(format!("{}/cli/apps/{app_id}/publish", trim_url(&api_url)))
-        .json(&json!({
+    let response = http_request::json(
+        http.post(format!("{}/cli/apps/{app_id}/publish", trim_url(&api_url))),
+        &json!({
             "sourceCommitSha": head,
             "bundleId": bundle_id,
             "changelog": changelog,
-        }))
-        .send()
-        .await
-        .context("could not publish the Maypop app")?;
+        }),
+    )?
+    .send()
+    .await
+    .context("could not publish the Maypop app")?;
     let published = successful_json::<PublishedVersion>(response).await?;
     if published.app_id != app_id || published.source_commit_sha.as_deref() != Some(head.as_str()) {
         bail!("Maypop returned a publish result for a different app or commit");
@@ -314,17 +317,17 @@ pub(crate) async fn apply(profile: Option<&str>, explicit_token: Option<&str>) -
     if fields.is_empty() {
         bail!("maypop.toml [app] has no fields to apply");
     }
-    let response = connection
-        .http
-        .put(format!(
+    let response = http_request::json(
+        connection.http.put(format!(
             "{}/cli/apps/{}",
             trim_url(&connection.api_url),
             connection.app_id
-        ))
-        .json(&fields)
-        .send()
-        .await
-        .context("could not update the Maypop app")?;
+        )),
+        &fields,
+    )?
+    .send()
+    .await
+    .context("could not update the Maypop app")?;
     let app = successful_json::<AppInfo>(response).await?;
     println!("Applied app metadata from maypop.toml.\n");
     print_app_info(&app, &connection.api_url);

@@ -1,5 +1,6 @@
 //! Direct upload of a built web application to Maypop's immutable bundle store.
 
+use crate::http;
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -72,16 +73,17 @@ pub(crate) async fn upload_directory(
         );
     }
     println!("Uploading {} build files...", files.len());
-    let response = client
-        .post(format!("{}/bundles/presign", trim_url(api_url)))
-        .json(&PresignRequest {
+    let response = http::json(
+        client.post(format!("{}/bundles/presign", trim_url(api_url))),
+        &PresignRequest {
             files: files.iter().map(|file| &file.manifest).collect(),
             entry,
             routing,
-        })
-        .send()
-        .await
-        .context("could not prepare the Maypop bundle upload")?;
+        },
+    )?
+    .send()
+    .await
+    .context("could not prepare the Maypop bundle upload")?;
     let presigned: PresignResponse = successful_json(response).await?;
     let local_paths = files
         .into_iter()
@@ -95,15 +97,14 @@ pub(crate) async fn upload_directory(
         upload_file(&file, local_path).await?;
     }
 
-    let response = client
-        .post(format!(
-            "{}/bundles/{}/confirm",
-            trim_url(api_url),
-            presigned.bundle_id
-        ))
-        .send()
-        .await
-        .context("could not confirm the Maypop bundle")?;
+    let response = http::empty(client.post(format!(
+        "{}/bundles/{}/confirm",
+        trim_url(api_url),
+        presigned.bundle_id
+    )))
+    .send()
+    .await
+    .context("could not confirm the Maypop bundle")?;
     successful_empty(response).await?;
     Ok(presigned.bundle_id)
 }
@@ -117,22 +118,20 @@ pub(crate) async fn upload_image(client: &Client, api_url: &str, path: &Path) ->
     if mime.type_().as_str() != "image" {
         bail!("thumbnail {} is not a recognized image", path.display());
     }
-    let response = client
-        .post(format!("{}/uploads/presign", trim_url(api_url)))
+    let response = http::empty(client.post(format!("{}/uploads/presign", trim_url(api_url))))
         .send()
         .await
         .context("could not prepare the thumbnail upload")?;
     let presigned: PresignedUpload = successful_json(response).await?;
     upload_to_policy(&presigned.url, &presigned.fields, path, "thumbnail").await?;
-    let response = client
-        .post(format!(
-            "{}/uploads/{}/confirm",
-            trim_url(api_url),
-            presigned.cid
-        ))
-        .send()
-        .await
-        .context("could not confirm the thumbnail upload")?;
+    let response = http::empty(client.post(format!(
+        "{}/uploads/{}/confirm",
+        trim_url(api_url),
+        presigned.cid
+    )))
+    .send()
+    .await
+    .context("could not confirm the thumbnail upload")?;
     successful_empty(response).await?;
     Ok(presigned.cid)
 }
@@ -235,7 +234,11 @@ async fn upload_to_policy(
     let part = reqwest::multipart::Part::bytes(bytes)
         .file_name(name.to_string())
         .mime_str(&mime)?;
-    let response = Client::new()
+    // GCS rejects chunked POST policy uploads with 411. HTTP/1.1 preserves
+    // reqwest's computed Content-Length for this fully buffered form.
+    let response = Client::builder()
+        .http1_only()
+        .build()?
         .post(url)
         .multipart(form.part("file", part))
         .send()

@@ -7,6 +7,12 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.1.1 - 2026-09-21
+
+### Fixed
+
+- Publish bundles through Google-hosted endpoints without failing with HTTP 411.
+
 ## 0.1.0 - 2026-09-21
 
 ### Added

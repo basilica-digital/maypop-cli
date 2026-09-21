@@ -66,7 +66,12 @@ jobs:
           $archive = "maypop-$env:GITHUB_REF_NAME-${{ matrix.target }}.${{ matrix.archive }}"
           Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.executable }}" -DestinationPath $archive
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
-          "$hash  $archive" | Out-File "$archive.sha256" -Encoding ascii
+          $checksum = "$hash  $archive`n"
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD "$archive.sha256"),
+            $checksum,
+            [System.Text.UTF8Encoding]::new($false)
+          )
       - uses: actions/upload-artifact@v4
         with:
           name: maypop-${{ matrix.target }}

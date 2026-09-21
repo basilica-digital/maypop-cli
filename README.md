@@ -45,7 +45,7 @@ one-time device secret, receives a 90-day Maypop access token, and saves it in
 an owner-only profiles file. Active CLI credentials appear in account settings,
 where the user can revoke any device immediately.
 
-The default binary has seven product commands:
+The default binary has eight product commands:
 
 - `maypop auth` signs in through the browser.
 - `maypop init` creates an unpublished app, initializes the current directory
@@ -60,6 +60,8 @@ The default binary has seven product commands:
 - `maypop app apply` explicitly applies the fields in `[app]`, uploading a
   configured thumbnail first when necessary.
 - `maypop status` reports backend health and the authenticated username/email.
+- `maypop mcp` connects MCP servers to your account and controls which ones the
+  current app can use.
 - `maypop profile` lists saved profiles and selects the default.
 
 The credential helper reads the matching profile and only answers for that
@@ -145,6 +147,39 @@ repository's API URL.
 
 The production API is used when the initial `default` profile is created with
 plain `maypop auth`.
+
+## MCP servers
+
+Connect a custom HTTPS MCP server to the account selected by `maypop auth`.
+Authentication headers are read from environment variables so their values do
+not appear in shell history:
+
+```sh
+export SEARCH_MCP_AUTH="Bearer ..."
+maypop mcp connect search https://mcp.example.com \
+  --header-env Authorization=SEARCH_MCP_AUTH
+maypop mcp list
+```
+
+Connections belong to your account. Apps get access only after you explicitly
+link a connection from inside a repository initialized by `maypop init`:
+
+```sh
+maypop mcp link search
+maypop mcp linked
+maypop mcp unlink search
+```
+
+IDs can be used anywhere a connection name is accepted. A name must be unique
+when used as a selector. `maypop mcp disconnect search` removes the account
+connection and all of its app links. Use `--json` with `list` or `linked` for
+machine-readable output.
+
+OAuth and managed provider connections still start in Maypop account settings;
+once connected there, they appear in `maypop mcp list` and can be linked with
+the CLI. The SDK's connected mode can use every linked MCP server. Hybrid mode
+can opt into the same real servers with `"mcp"` in `.maypop/dev.json`'s
+`remoteCapabilities`.
 
 The API tells the CLI which Git origin to use. The full local stack advertises
 `http://localhost:3005/git`; deployments normally advertise the API gateway's

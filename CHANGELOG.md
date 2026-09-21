@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Connect MCP servers to an account and control which servers an app can use.
+
 ## 0.1.2 - 2026-09-21
 
 ### Fixed

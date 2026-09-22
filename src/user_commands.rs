@@ -44,11 +44,11 @@ struct AppInfo {
     stable_version: i32,
 }
 
-struct AppConnection {
+pub(crate) struct AppConnection {
     repository: PathBuf,
-    app_id: String,
-    api_url: String,
-    http: Client,
+    pub(crate) app_id: String,
+    pub(crate) api_url: String,
+    pub(crate) http: Client,
 }
 
 /// Build an HTTP client with an optional Maypop bearer credential.
@@ -450,7 +450,10 @@ async fn current_user(client: &Client, api_url: &str) -> Result<CredentialUser> 
     successful_json(response).await
 }
 
-fn app_connection(profile: Option<&str>, explicit_token: Option<&str>) -> Result<AppConnection> {
+pub(crate) fn app_connection(
+    profile: Option<&str>,
+    explicit_token: Option<&str>,
+) -> Result<AppConnection> {
     let repository = repository_root(std::env::current_dir()?)?;
     let app_id = required_git_config(&repository, APP_ID_KEY)?;
     let api_url = required_git_config(&repository, API_URL_KEY)?;
@@ -464,7 +467,9 @@ fn app_connection(profile: Option<&str>, explicit_token: Option<&str>) -> Result
     })
 }
 
-async fn successful_json<T: for<'de> Deserialize<'de>>(response: reqwest::Response) -> Result<T> {
+pub(crate) async fn successful_json<T: for<'de> Deserialize<'de>>(
+    response: reqwest::Response,
+) -> Result<T> {
     let status = response.status();
     if status.is_success() {
         return response

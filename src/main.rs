@@ -2,6 +2,7 @@ mod auth;
 mod bundle_upload;
 mod credentials;
 mod http;
+mod mcp;
 mod project;
 mod user_commands;
 
@@ -79,6 +80,11 @@ enum Commands {
     },
     /// Show backend health and the authenticated account
     Status,
+    /// Connect MCP servers and manage their access to apps
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommands,
+    },
     /// List profiles and select the default
     Profile {
         #[command(subcommand)]
@@ -240,6 +246,47 @@ enum ProfileCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum McpCommands {
+    /// List MCP servers connected to your account
+    List {
+        /// Print the API response as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Connect a custom MCP server to your account
+    Connect {
+        /// Account-local name for the server
+        name: String,
+        /// HTTPS MCP endpoint
+        url: String,
+        /// Read an HTTP header from an environment variable (HEADER=ENV_VAR)
+        #[arg(long = "header-env", value_name = "HEADER=ENV_VAR")]
+        header_env: Vec<String>,
+    },
+    /// Disconnect an MCP server from your account
+    Disconnect {
+        /// Integration ID or unique name
+        integration: String,
+    },
+    /// List MCP servers linked to the current app
+    Linked {
+        /// Print the API response as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Give the current app access to one of your MCP servers
+    Link {
+        /// Integration ID or unique name
+        integration: String,
+    },
+    /// Remove the current app's access to an MCP server
+    Unlink {
+        /// Integration ID or unique name
+        integration: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     if let Err(e) = run().await {
@@ -307,6 +354,47 @@ async fn run() -> Result<()> {
                 endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
             user_commands::status(&api_url, selected_profile, token.as_deref()).await
         }
+        Commands::Mcp { command } => match command {
+            McpCommands::List { json } => {
+                let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
+                let selected_profile =
+                    endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
+                mcp::list(&api_url, selected_profile, token.as_deref(), json).await
+            }
+            McpCommands::Connect {
+                name,
+                url: server_url,
+                header_env,
+            } => {
+                let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
+                let selected_profile =
+                    endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
+                mcp::connect(
+                    &api_url,
+                    selected_profile,
+                    token.as_deref(),
+                    &name,
+                    &server_url,
+                    &header_env,
+                )
+                .await
+            }
+            McpCommands::Disconnect { integration } => {
+                let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
+                let selected_profile =
+                    endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
+                mcp::disconnect(&api_url, selected_profile, token.as_deref(), &integration).await
+            }
+            McpCommands::Linked { json } => {
+                mcp::linked(profile.as_deref(), token.as_deref(), json).await
+            }
+            McpCommands::Link { integration } => {
+                mcp::link(profile.as_deref(), token.as_deref(), &integration).await
+            }
+            McpCommands::Unlink { integration } => {
+                mcp::unlink(profile.as_deref(), token.as_deref(), &integration).await
+            }
+        },
         Commands::Profile {
             command: ProfileCommands::List,
         } => list_profiles(),
@@ -632,11 +720,11 @@ mod tests {
         #[cfg(not(feature = "admin"))]
         assert_eq!(
             visible,
-            ["auth", "init", "publish", "info", "app", "status", "profile"]
+            ["auth", "init", "publish", "info", "app", "status", "mcp", "profile"]
         );
         #[cfg(feature = "admin")]
         for required in [
-            "auth", "init", "publish", "info", "app", "status", "profile",
+            "auth", "init", "publish", "info", "app", "status", "mcp", "profile",
         ] {
             assert!(visible.contains(&required));
         }

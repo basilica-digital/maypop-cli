@@ -68,8 +68,9 @@ The default binary has nine product commands:
 
 The credential helper reads the matching profile and only answers for that
 account's path on the configured Maypop Git host. The token is not embedded in
-the remote URL or `.git/config`; ordinary `git pull` and `git push` work after
-`maypop init`.
+the remote URL or `.git/config`. Use `maypop publish` for release pushes; it
+applies the Git pack compatibility settings currently required by the Maypop
+Git server.
 
 ## Build adapters
 

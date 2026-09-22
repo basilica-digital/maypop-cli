@@ -254,9 +254,22 @@ pub(crate) async fn publish(
         build.output_directory.display()
     );
 
+    // The Maypop Git server does not yet accept delta-compressed thin packs.
+    // Keep the compatibility settings scoped to this push instead of changing
+    // the user's global or repository Git configuration.
     run_git_with_auth(
         &repository,
-        &["push", "--set-upstream", "origin", "HEAD:refs/heads/main"],
+        &[
+            "-c",
+            "pack.window=0",
+            "-c",
+            "pack.depth=0",
+            "push",
+            "--no-thin",
+            "--set-upstream",
+            "origin",
+            "HEAD:refs/heads/main",
+        ],
         &api_url,
         &token,
     )

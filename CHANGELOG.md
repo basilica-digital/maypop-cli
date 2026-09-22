@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Generate image, audio, and video files with the authenticated account through `maypop ai`.
+
 ## 0.2.0 - 2026-09-22
 
 ### Added

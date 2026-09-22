@@ -1,3 +1,4 @@
+mod ai;
 mod auth;
 mod bundle_upload;
 mod credentials;
@@ -9,7 +10,7 @@ mod user_commands;
 #[cfg(feature = "admin")]
 use anyhow::bail;
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 #[cfg(feature = "admin")]
 use reqwest::header;
 use reqwest::Client;
@@ -80,6 +81,11 @@ enum Commands {
     },
     /// Show backend health and the authenticated account
     Status,
+    /// Generate media with the authenticated Maypop account
+    Ai {
+        #[command(subcommand)]
+        command: AiCommands,
+    },
     /// Connect MCP servers and manage their access to apps
     Mcp {
         #[command(subcommand)]
@@ -247,6 +253,168 @@ enum ProfileCommands {
 }
 
 #[derive(Subcommand)]
+enum AiCommands {
+    /// Generate a PNG image
+    Image {
+        /// Description of the image to generate
+        #[arg(long)]
+        prompt: String,
+        /// Destination PNG path
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Generation tier
+        #[arg(long, value_enum, default_value = "fast")]
+        tier: ImageTier,
+        /// Resolution preset or WIDTHxHEIGHT pixels
+        #[arg(long, default_value = "2K")]
+        size: String,
+        /// Replace an existing destination file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Generate an MP3 or WAV audio file
+    Audio {
+        /// Description of the audio to generate
+        #[arg(long)]
+        prompt: String,
+        /// Destination .mp3 or .wav path
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Audio format; defaults to the destination extension
+        #[arg(long, value_enum)]
+        format: Option<AudioFormat>,
+        /// Replace an existing destination file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Generate an MP4 video
+    Video {
+        /// Description of the scene, motion, camera, and sound
+        #[arg(long)]
+        prompt: String,
+        /// Destination MP4 path
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Generation model
+        #[arg(long, value_enum, default_value = "fast")]
+        model: VideoModel,
+        /// Duration in seconds; fast supports up to 15, quality up to 30
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(4..=30))]
+        duration: u32,
+        /// Output resolution
+        #[arg(long, value_enum, default_value = "720p")]
+        resolution: VideoResolution,
+        /// Output aspect ratio
+        #[arg(long, value_enum, default_value = "16:9")]
+        ratio: VideoRatio,
+        /// Include synchronized audio
+        #[arg(long)]
+        generate_audio: bool,
+        /// Optional deterministic provider seed
+        #[arg(long)]
+        seed: Option<i32>,
+        /// Replace an existing destination file
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum ImageTier {
+    #[default]
+    Fast,
+    Quality,
+}
+
+impl ImageTier {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Quality => "quality",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum AudioFormat {
+    Mp3,
+    Wav,
+}
+
+impl AudioFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Mp3 => "mp3",
+            Self::Wav => "wav",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum VideoModel {
+    #[default]
+    Fast,
+    Quality,
+}
+
+impl VideoModel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Quality => "quality",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum VideoResolution {
+    #[value(name = "480p")]
+    P480,
+    #[default]
+    #[value(name = "720p")]
+    P720,
+}
+
+impl VideoResolution {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::P480 => "480p",
+            Self::P720 => "720p",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum VideoRatio {
+    #[default]
+    #[value(name = "16:9")]
+    SixteenNine,
+    #[value(name = "9:16")]
+    NineSixteen,
+    #[value(name = "4:3")]
+    FourThree,
+    #[value(name = "3:4")]
+    ThreeFour,
+    #[value(name = "1:1")]
+    OneOne,
+    #[value(name = "21:9")]
+    TwentyOneNine,
+}
+
+impl VideoRatio {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SixteenNine => "16:9",
+            Self::NineSixteen => "9:16",
+            Self::FourThree => "4:3",
+            Self::ThreeFour => "3:4",
+            Self::OneOne => "1:1",
+            Self::TwentyOneNine => "21:9",
+        }
+    }
+}
+
+#[derive(Subcommand)]
 enum McpCommands {
     /// List MCP servers connected to your account
     List {
@@ -378,6 +546,76 @@ async fn run() -> Result<()> {
             let selected_profile =
                 endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
             user_commands::status(&api_url, selected_profile, token.as_deref()).await
+        }
+        Commands::Ai { command } => {
+            let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
+            let selected_profile =
+                endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
+            match command {
+                AiCommands::Image {
+                    prompt,
+                    output,
+                    tier,
+                    size,
+                    force,
+                } => {
+                    ai::generate_image(
+                        &api_url,
+                        selected_profile,
+                        token.as_deref(),
+                        &prompt,
+                        &output,
+                        tier.as_str(),
+                        &size,
+                        force,
+                    )
+                    .await
+                }
+                AiCommands::Audio {
+                    prompt,
+                    output,
+                    format,
+                    force,
+                } => {
+                    ai::generate_audio(
+                        &api_url,
+                        selected_profile,
+                        token.as_deref(),
+                        &prompt,
+                        &output,
+                        format.map(AudioFormat::as_str),
+                        force,
+                    )
+                    .await
+                }
+                AiCommands::Video {
+                    prompt,
+                    output,
+                    model,
+                    duration,
+                    resolution,
+                    ratio,
+                    generate_audio,
+                    seed,
+                    force,
+                } => {
+                    ai::generate_video(
+                        &api_url,
+                        selected_profile,
+                        token.as_deref(),
+                        &prompt,
+                        &output,
+                        model.as_str(),
+                        duration,
+                        resolution.as_str(),
+                        ratio.as_str(),
+                        generate_audio,
+                        seed,
+                        force,
+                    )
+                    .await
+                }
+            }
         }
         Commands::Mcp { command } => match command {
             McpCommands::List { json } => {
@@ -796,11 +1034,11 @@ mod tests {
         #[cfg(not(feature = "admin"))]
         assert_eq!(
             visible,
-            ["auth", "init", "publish", "info", "app", "status", "mcp", "profile"]
+            ["auth", "init", "publish", "info", "app", "status", "ai", "mcp", "profile"]
         );
         #[cfg(feature = "admin")]
         for required in [
-            "auth", "init", "publish", "info", "app", "status", "mcp", "profile",
+            "auth", "init", "publish", "info", "app", "status", "ai", "mcp", "profile",
         ] {
             assert!(visible.contains(&required));
         }
@@ -903,6 +1141,69 @@ mod tests {
             } if integration == "search"
                 && tool == "web_search"
                 && arguments == r#"{"query":"Maypop SDK"}"#
+        ));
+    }
+
+    #[test]
+    fn ai_media_commands_parse_agent_facing_options() {
+        let image = Cli::try_parse_from([
+            "maypop",
+            "ai",
+            "image",
+            "--prompt",
+            "A paper garden",
+            "--output",
+            "Images/hero.png",
+            "--tier",
+            "quality",
+            "--size",
+            "2048x1536",
+        ])
+        .unwrap();
+        assert!(matches!(
+            image.command,
+            Commands::Ai {
+                command: AiCommands::Image {
+                    prompt,
+                    output,
+                    tier,
+                    size,
+                    force: false,
+                }
+            } if prompt == "A paper garden"
+                && output == std::path::Path::new("Images/hero.png")
+                && tier == ImageTier::Quality
+                && size == "2048x1536"
+        ));
+
+        let video = Cli::try_parse_from([
+            "maypop",
+            "ai",
+            "video",
+            "--prompt",
+            "Clouds moving over a city",
+            "--output",
+            "Video/intro.mp4",
+            "--model",
+            "quality",
+            "--duration",
+            "20",
+            "--ratio",
+            "21:9",
+            "--generate-audio",
+        ])
+        .unwrap();
+        assert!(matches!(
+            video.command,
+            Commands::Ai {
+                command: AiCommands::Video {
+                    model,
+                    duration: 20,
+                    ratio,
+                    generate_audio: true,
+                    ..
+                }
+            } if model == VideoModel::Quality && ratio == VideoRatio::TwentyOneNine
         ));
     }
 }

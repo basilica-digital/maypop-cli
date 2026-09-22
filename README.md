@@ -45,7 +45,7 @@ one-time device secret, receives a 90-day Maypop access token, and saves it in
 an owner-only profiles file. Active CLI credentials appear in account settings,
 where the user can revoke any device immediately.
 
-The default binary has eight product commands:
+The default binary has nine product commands:
 
 - `maypop auth` signs in through the browser.
 - `maypop init` creates an unpublished app, initializes the current directory
@@ -60,6 +60,8 @@ The default binary has eight product commands:
 - `maypop app apply` explicitly applies the fields in `[app]`, uploading a
   configured thumbnail first when necessary.
 - `maypop status` reports backend health and the authenticated username/email.
+- `maypop ai` generates image, audio, and video files with the authenticated
+  account.
 - `maypop mcp` connects MCP servers to your account and controls which ones the
   current app can use.
 - `maypop profile` lists saved profiles and selects the default.
@@ -147,6 +149,40 @@ repository's API URL.
 
 The production API is used when the initial `default` profile is created with
 plain `maypop auth`.
+
+## AI media generation
+
+Use the account selected by `maypop auth` to generate media from any directory;
+these commands do not need an initialized app or mint an app session:
+
+```sh
+maypop ai image \
+  --prompt "A full-bleed paper-cut garden, warm neutral palette, no text" \
+  --output Images/hero.png \
+  --size 2048x1536
+
+maypop ai audio \
+  --prompt "A gentle 12-second marimba loop with soft room ambience" \
+  --output Audio/theme.mp3
+
+maypop ai video \
+  --prompt "Slow dolly through a paper garden at sunrise, leaves moving in the breeze" \
+  --output Video/intro.mp4 \
+  --duration 8 \
+  --ratio 16:9 \
+  --generate-audio
+```
+
+Image generation supports `--tier fast|quality` and a resolution preset or
+`WIDTHxHEIGHT` `--size`. Audio output must end in `.mp3` or `.wav`; its format
+defaults to that extension. Video generation supports `--model fast|quality`,
+4–30 seconds, `480p` or `720p`, and the documented aspect-ratio choices. Fast
+video is limited to 15 seconds. Run each subcommand with `--help` for the exact
+options.
+
+Every invocation can consume AI credits. The CLI sends one generation request
+and never automatically retries it. Existing files are preserved unless
+`--force` is passed, and parent directories are created automatically.
 
 ## MCP servers
 

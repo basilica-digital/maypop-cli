@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- Push publication commits without delta compression or thin packs for compatibility with the Maypop Git server.
+
 ## 0.3.0 - 2026-09-22
 
 ### Added

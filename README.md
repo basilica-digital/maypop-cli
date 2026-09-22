@@ -175,6 +175,31 @@ when used as a selector. `maypop mcp disconnect search` removes the account
 connection and all of its app links. Use `--json` with `list` or `linked` for
 machine-readable output.
 
+Read the server's live tool descriptions and JSON input schemas before calling
+one:
+
+```sh
+maypop mcp tools search
+maypop mcp tools search --json
+maypop mcp call search web_search \
+  --arguments '{"query":"Maypop SDK"}'
+```
+
+`maypop mcp docs` is an alias for `maypop mcp tools`. By default these commands
+test the personal connection directly. Add `--app` from an initialized app
+repository to exercise the app-linked route and its permissions instead:
+
+```sh
+maypop mcp tools search --app --json
+maypop mcp call search web_search --app \
+  --arguments '{"query":"Maypop SDK"}'
+```
+
+Tool calls print the raw MCP result as formatted JSON, including `content`,
+`structuredContent`, and `isError` when the server provides them. This makes the
+commands suitable for both manual diagnosis and agent-driven verification. The
+command exits unsuccessfully when the MCP result reports `isError: true`.
+
 OAuth and managed provider connections still start in Maypop account settings;
 once connected there, they appear in `maypop mcp list` and can be linked with
 the CLI. The SDK's connected mode can use every linked MCP server. Hybrid mode

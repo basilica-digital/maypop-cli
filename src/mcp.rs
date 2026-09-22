@@ -124,6 +124,54 @@ pub(crate) async fn disconnect(
     Ok(())
 }
 
+/// Print the live tool documentation exposed by a personal MCP connection.
+pub(crate) async fn tools(
+    api_url: &str,
+    profile: Option<&str>,
+    explicit_token: Option<&str>,
+    selector: &str,
+    json_output: bool,
+) -> Result<()> {
+    let http = account_client(api_url, profile, explicit_token)?;
+    let integrations = list_personal(&http, api_url).await?;
+    let integration = select(&integrations, selector)?;
+    let response = http_request::empty(http.post(format!(
+        "{}/me/integrations/{}/tools/list",
+        trim_url(api_url),
+        integration.id
+    )))
+    .send()
+    .await
+    .context("could not read MCP tool documentation")?;
+    print_tools(successful_json(response).await?, json_output)
+}
+
+/// Invoke a tool through a personal MCP connection.
+pub(crate) async fn call(
+    api_url: &str,
+    profile: Option<&str>,
+    explicit_token: Option<&str>,
+    selector: &str,
+    tool: &str,
+    arguments: &str,
+) -> Result<()> {
+    let http = account_client(api_url, profile, explicit_token)?;
+    let integrations = list_personal(&http, api_url).await?;
+    let integration = select(&integrations, selector)?;
+    let result = call_tool(
+        &http,
+        format!(
+            "{}/me/integrations/{}/tools/call",
+            trim_url(api_url),
+            integration.id
+        ),
+        tool,
+        arguments,
+    )
+    .await?;
+    print_call_result(result)
+}
+
 /// List MCP servers linked to the app in the current repository.
 pub(crate) async fn linked(
     profile: Option<&str>,
@@ -134,6 +182,56 @@ pub(crate) async fn linked(
     let integrations =
         list_linked(&connection.http, &connection.api_url, &connection.app_id).await?;
     print_linked(&integrations, json_output)
+}
+
+/// Print tool documentation through the integration linked to the current app.
+pub(crate) async fn app_tools(
+    profile: Option<&str>,
+    explicit_token: Option<&str>,
+    selector: &str,
+    json_output: bool,
+) -> Result<()> {
+    let connection = app_connection(profile, explicit_token)?;
+    let integrations =
+        list_linked(&connection.http, &connection.api_url, &connection.app_id).await?;
+    let integration = select(&integrations, selector)?;
+    let response = http_request::empty(connection.http.post(format!(
+        "{}/apps/{}/integrations/{}/tools/list",
+        trim_url(&connection.api_url),
+        connection.app_id,
+        integration.id
+    )))
+    .send()
+    .await
+    .context("could not read the app's MCP tool documentation")?;
+    print_tools(successful_json(response).await?, json_output)
+}
+
+/// Invoke a tool through the integration linked to the current app.
+pub(crate) async fn app_call(
+    profile: Option<&str>,
+    explicit_token: Option<&str>,
+    selector: &str,
+    tool: &str,
+    arguments: &str,
+) -> Result<()> {
+    let connection = app_connection(profile, explicit_token)?;
+    let integrations =
+        list_linked(&connection.http, &connection.api_url, &connection.app_id).await?;
+    let integration = select(&integrations, selector)?;
+    let result = call_tool(
+        &connection.http,
+        format!(
+            "{}/apps/{}/integrations/{}/tools/call",
+            trim_url(&connection.api_url),
+            connection.app_id,
+            integration.id
+        ),
+        tool,
+        arguments,
+    )
+    .await?;
+    print_call_result(result)
 }
 
 /// Link one of the authenticated user's MCP servers to the current app.
@@ -217,6 +315,83 @@ async fn list_linked(
         .await
         .context("could not list this app's MCP servers")?;
     successful_json(response).await
+}
+
+async fn call_tool(
+    http: &reqwest::Client,
+    endpoint: String,
+    tool: &str,
+    arguments: &str,
+) -> Result<Value> {
+    let arguments = parse_arguments(arguments)?;
+    let response = http_request::json(
+        http.post(endpoint),
+        &json!({ "name": tool, "arguments": arguments }),
+    )?
+    .send()
+    .await
+    .context("could not call the MCP tool")?;
+    successful_json(response).await
+}
+
+fn parse_arguments(arguments: &str) -> Result<Value> {
+    let value = serde_json::from_str::<Value>(arguments).context("invalid JSON arguments")?;
+    if !value.is_object() {
+        bail!("MCP tool arguments must be a JSON object");
+    }
+    Ok(value)
+}
+
+fn print_call_result(result: Value) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    ensure_call_succeeded(&result)
+}
+
+fn ensure_call_succeeded(result: &Value) -> Result<()> {
+    if result.get("isError").and_then(Value::as_bool) == Some(true) {
+        bail!("MCP tool returned an error");
+    }
+    Ok(())
+}
+
+fn print_tools(result: Value, json_output: bool) -> Result<()> {
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+    let tools = result
+        .get("tools")
+        .and_then(Value::as_array)
+        .context("MCP server returned a tool list without a `tools` array")?;
+    if tools.is_empty() {
+        println!("This MCP server advertises no tools.");
+        return Ok(());
+    }
+    for (index, tool) in tools.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        let name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .context("MCP server returned a tool without a name")?;
+        println!("{name}");
+        if let Some(description) = tool.get("description").and_then(Value::as_str) {
+            if !description.is_empty() {
+                println!("  {description}");
+            }
+        }
+        let schema = tool
+            .get("inputSchema")
+            .cloned()
+            .unwrap_or_else(|| json!({ "type": "object" }));
+        let schema = serde_json::to_string_pretty(&schema)?;
+        println!("  Input schema:");
+        for line in schema.lines() {
+            println!("    {line}");
+        }
+    }
+    Ok(())
 }
 
 fn select<'a, T: IntegrationIdentity>(items: &'a [T], selector: &str) -> Result<&'a T> {
@@ -357,5 +532,33 @@ mod tests {
         );
         assert!(parse_header_binding("Authorization").is_err());
         assert!(parse_header_binding("=MCP_TOKEN").is_err());
+    }
+
+    #[test]
+    fn tool_arguments_must_be_a_json_object() {
+        assert_eq!(
+            parse_arguments(r#"{"query":"maypop"}"#).unwrap()["query"],
+            "maypop"
+        );
+        assert!(parse_arguments("[]")
+            .unwrap_err()
+            .to_string()
+            .contains("object"));
+        assert!(parse_arguments("not-json")
+            .unwrap_err()
+            .to_string()
+            .contains("invalid JSON"));
+    }
+
+    #[test]
+    fn tool_level_errors_make_the_cli_command_fail() {
+        assert!(ensure_call_succeeded(&json!({
+            "isError": true,
+            "content": [{ "type": "text", "text": "upstream failure" }]
+        }))
+        .unwrap_err()
+        .to_string()
+        .contains("returned an error"));
+        assert!(ensure_call_succeeded(&json!({ "content": [] })).is_ok());
     }
 }

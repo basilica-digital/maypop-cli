@@ -269,6 +269,31 @@ enum McpCommands {
         /// Integration ID or unique name
         integration: String,
     },
+    /// Show live tool documentation and input schemas
+    #[command(visible_alias = "docs")]
+    Tools {
+        /// Integration ID or unique name
+        integration: String,
+        /// Test through the current app's linked integration
+        #[arg(long)]
+        app: bool,
+        /// Print the unmodified MCP tool-list result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Invoke a tool and print its raw MCP result
+    Call {
+        /// Integration ID or unique name
+        integration: String,
+        /// Tool name from `maypop mcp tools`
+        tool: String,
+        /// JSON object matching the tool's input schema
+        #[arg(long, default_value = "{}", value_name = "JSON")]
+        arguments: String,
+        /// Test through the current app's linked integration
+        #[arg(long)]
+        app: bool,
+    },
     /// List MCP servers linked to the current app
     Linked {
         /// Print the API response as JSON
@@ -384,6 +409,57 @@ async fn run() -> Result<()> {
                 let selected_profile =
                     endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
                 mcp::disconnect(&api_url, selected_profile, token.as_deref(), &integration).await
+            }
+            McpCommands::Tools {
+                integration,
+                app,
+                json,
+            } => {
+                if app {
+                    mcp::app_tools(profile.as_deref(), token.as_deref(), &integration, json).await
+                } else {
+                    let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
+                    let selected_profile =
+                        endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
+                    mcp::tools(
+                        &api_url,
+                        selected_profile,
+                        token.as_deref(),
+                        &integration,
+                        json,
+                    )
+                    .await
+                }
+            }
+            McpCommands::Call {
+                integration,
+                tool,
+                arguments,
+                app,
+            } => {
+                if app {
+                    mcp::app_call(
+                        profile.as_deref(),
+                        token.as_deref(),
+                        &integration,
+                        &tool,
+                        &arguments,
+                    )
+                    .await
+                } else {
+                    let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
+                    let selected_profile =
+                        endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
+                    mcp::call(
+                        &api_url,
+                        selected_profile,
+                        token.as_deref(),
+                        &integration,
+                        &tool,
+                        &arguments,
+                    )
+                    .await
+                }
             }
             McpCommands::Linked { json } => {
                 mcp::linked(profile.as_deref(), token.as_deref(), json).await
@@ -786,6 +862,47 @@ mod tests {
                 visibility: Some(visibility),
                 ..
             } if name == "CLI app" && description == "CLI description" && visibility == "public"
+        ));
+    }
+
+    #[test]
+    fn mcp_tools_and_calls_accept_app_scoped_agent_options() {
+        let tools =
+            Cli::try_parse_from(["maypop", "mcp", "docs", "search", "--app", "--json"]).unwrap();
+        assert!(matches!(
+            tools.command,
+            Commands::Mcp {
+                command: McpCommands::Tools {
+                    integration,
+                    app: true,
+                    json: true,
+                }
+            } if integration == "search"
+        ));
+
+        let call = Cli::try_parse_from([
+            "maypop",
+            "mcp",
+            "call",
+            "search",
+            "web_search",
+            "--app",
+            "--arguments",
+            r#"{"query":"Maypop SDK"}"#,
+        ])
+        .unwrap();
+        assert!(matches!(
+            call.command,
+            Commands::Mcp {
+                command: McpCommands::Call {
+                    integration,
+                    tool,
+                    arguments,
+                    app: true,
+                }
+            } if integration == "search"
+                && tool == "web_search"
+                && arguments == r#"{"query":"Maypop SDK"}"#
         ));
     }
 }

@@ -10,6 +10,7 @@ and this project uses [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Connect MCP servers to an account and control which servers an app can use.
+- Inspect live MCP tool documentation and invoke tools from the CLI.
 
 ## 0.1.2 - 2026-09-21
 

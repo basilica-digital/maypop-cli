@@ -259,13 +259,13 @@ cargo install --locked --path . --features admin
 
 ## Release
 
-The package version in `Cargo.toml` is authoritative. To release `0.2.0`:
+The package version in `Cargo.toml` is authoritative. To release `0.3.0`:
 
-1. Set `version = "0.2.0"` in `Cargo.toml`.
+1. Set `version = "0.3.0"` in `Cargo.toml`.
 2. Run `cargo check` to update the package entry in `Cargo.lock`.
-3. Move the relevant entries in `CHANGELOG.md` under a dated `0.2.0` heading.
-4. Commit those files with `chore: release v0.2.0`.
-5. Create an annotated `v0.2.0` tag and push both `main` and the tag.
+3. Move the relevant entries in `CHANGELOG.md` under a dated `0.3.0` heading.
+4. Commit those files with `chore: release v0.3.0`.
+5. Create an annotated `v0.3.0` tag and push both `main` and the tag.
 
 The tag is the release trigger. GitHub Actions rejects it unless it exactly
 matches the package version, runs the tests, builds every release archive and

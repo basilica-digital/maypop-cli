@@ -164,6 +164,7 @@ pub(crate) async fn init(
         .clone()
         .context("initial app visibility is missing")?;
     let config_path = project::create_config(&repository, Some(&initial_app))?;
+    project::ignore_maypop_local(&repository)?;
     let response = http_request::json(
         http.post(format!("{}/cli/apps", trim_url(api_url))),
         &json!({

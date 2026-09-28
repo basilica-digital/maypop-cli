@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed
+
+- `maypop init` adds the files the Maypop SDK keeps for one machine (`.maypop/local/`, `.maypop/.lock`, `dev.json`, `kv.json`, and the like) to `.gitignore`, so they are never committed; `.maypop/kv-policy.json` and `mcp.json` stay committed.
+
 ## 0.3.1 - 2026-09-22
 
 ### Fixed

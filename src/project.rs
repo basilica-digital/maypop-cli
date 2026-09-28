@@ -12,6 +12,21 @@ use toml_edit::{value, Array, DocumentMut, Item, Table};
 
 const CONFIG_FILE: &str = "maypop.toml";
 
+/// What the Maypop SDK keeps for one machine: its `.maypop/local/`, and the
+/// files older SDKs wrote beside the ones an app commits
+/// (`.maypop/kv-policy.json`, `mcp.json`, `publish/`). A committed lock names
+/// a dev server's PID that the next checkout's dev server then refuses to
+/// start over.
+const MAYPOP_LOCAL_PATHS: &[&str] = &[
+    ".maypop/local/",
+    ".maypop/.lock",
+    ".maypop/config.json",
+    ".maypop/dev.json",
+    ".maypop/drive/",
+    ".maypop/kv.json",
+    ".maypop/notifications.json",
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Framework {
     Auto,
@@ -111,6 +126,41 @@ pub(crate) fn create_config(repository: &Path, app: Option<&AppConfig>) -> Resul
         .with_context(|| format!("could not create {}", path.display()))?;
     file.write_all(document.to_string().as_bytes())?;
     Ok(path)
+}
+
+/// Add what [`MAYPOP_LOCAL_PATHS`] names to the repository's `.gitignore`
+/// where it is missing, keeping everything already there.
+pub(crate) fn ignore_maypop_local(repository: &Path) -> Result<()> {
+    let path = repository.join(".gitignore");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(error).with_context(|| format!("could not read {}", path.display()))
+        }
+    };
+    let present: Vec<&str> = existing.lines().map(str::trim).collect();
+    let missing: Vec<&str> = MAYPOP_LOCAL_PATHS
+        .iter()
+        .copied()
+        .filter(|local| !present.contains(local))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut contents = existing;
+    if !contents.is_empty() {
+        if !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+        contents.push('\n');
+    }
+    contents.push_str("# Maypop SDK files for this machine\n");
+    for local in missing {
+        contents.push_str(local);
+        contents.push('\n');
+    }
+    std::fs::write(&path, contents).with_context(|| format!("could not update {}", path.display()))
 }
 
 /// Read the optional declarative app metadata from `maypop.toml`.
@@ -483,6 +533,33 @@ fn strings(values: &[&str]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_ignores_maypop_machine_files_once_and_keeps_committed_ones() {
+        let directory =
+            std::env::temp_dir().join(format!("maypop-ignore-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join(".gitignore"),
+            "node_modules\n.maypop/kv.json",
+        )
+        .unwrap();
+        ignore_maypop_local(&directory).unwrap();
+        ignore_maypop_local(&directory).unwrap();
+        let contents = std::fs::read_to_string(directory.join(".gitignore")).unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(&lines[..2], ["node_modules", ".maypop/kv.json"]);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| **line == ".maypop/kv.json")
+                .count(),
+            1
+        );
+        assert!(lines.contains(&".maypop/local/") && lines.contains(&".maypop/.lock"));
+        assert!(!lines.contains(&".maypop/kv-policy.json"));
+    }
 
     #[test]
     fn framework_detection_prefers_the_framework_package() {

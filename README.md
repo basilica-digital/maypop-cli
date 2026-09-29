@@ -54,7 +54,7 @@ The default binary has nine product commands:
   existing `maypop.toml`, or creates one with the detected framework adapter.
   It also adds the files the Maypop SDK keeps for one machine (`.maypop/local/`
   and older files such as `.maypop/.lock` and `.maypop/dev.json`) to
-  `.gitignore`; `.maypop/kv-policy.json` and `.maypop/mcp.json` stay committed.
+  `.gitignore`; `.maypop/kv-policy.json` stays committed.
 - `maypop publish` requires a clean worktree, builds the app, pushes the current
   Git `HEAD`, uploads the adapter's static output directly to object storage,
   and promotes that artifact as the app's next immutable version.

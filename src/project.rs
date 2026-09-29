@@ -13,10 +13,10 @@ use toml_edit::{value, Array, DocumentMut, Item, Table};
 const CONFIG_FILE: &str = "maypop.toml";
 
 /// What the Maypop SDK keeps for one machine: its `.maypop/local/`, and the
-/// files older SDKs wrote beside the ones an app commits
-/// (`.maypop/kv-policy.json`, `mcp.json`, `publish/`). A committed lock names
-/// a dev server's PID that the next checkout's dev server then refuses to
-/// start over.
+/// files older SDKs wrote straight into `.maypop/`. `.maypop/kv-policy.json` and
+/// `publish/` stay committed: the platform reads them from the app's source. A
+/// committed lock names a dev server's PID that the next checkout's dev server
+/// then refuses to start over.
 const MAYPOP_LOCAL_PATHS: &[&str] = &[
     ".maypop/local/",
     ".maypop/.lock",
@@ -25,6 +25,7 @@ const MAYPOP_LOCAL_PATHS: &[&str] = &[
     ".maypop/drive/",
     ".maypop/kv.json",
     ".maypop/notifications.json",
+    ".maypop/mcp.json",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

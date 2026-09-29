@@ -12,20 +12,20 @@ use toml_edit::{value, Array, DocumentMut, Item, Table};
 
 const CONFIG_FILE: &str = "maypop.toml";
 
-/// What the Maypop SDK keeps for one machine: its `.maypop/local/`, and the
-/// files older SDKs wrote straight into `.maypop/`. `.maypop/kv-policy.json` and
-/// `publish/` stay committed: the platform reads them from the app's source. A
-/// committed lock names a dev server's PID that the next checkout's dev server
-/// then refuses to start over.
-const MAYPOP_LOCAL_PATHS: &[&str] = &[
-    ".maypop/local/",
-    ".maypop/.lock",
-    ".maypop/config.json",
-    ".maypop/dev.json",
-    ".maypop/drive/",
-    ".maypop/kv.json",
-    ".maypop/notifications.json",
-    ".maypop/mcp.json",
+/// What the Maypop SDK keeps for one machine, as patterns in
+/// `.maypop/.gitignore`: its `local/`, and the files SDKs up to 1.2 wrote straight
+/// into `.maypop/`. `kv-policy.json` and `publish/` stay committed: the platform reads
+/// them from the app's source. A committed lock names a dev server's PID that
+/// the next checkout's dev server then refuses to start over.
+const MAYPOP_LOCAL_PATTERNS: &[&str] = &[
+    "/local/",
+    "/.lock",
+    "/config.json",
+    "/dev.json",
+    "/drive/",
+    "/kv.json",
+    "/notifications.json",
+    "/mcp.json",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,10 +129,14 @@ pub(crate) fn create_config(repository: &Path, app: Option<&AppConfig>) -> Resul
     Ok(path)
 }
 
-/// Add what [`MAYPOP_LOCAL_PATHS`] names to the repository's `.gitignore`
-/// where it is missing, keeping everything already there.
+/// Keep the Maypop SDK's files for one machine out of Git with a
+/// `.maypop/.gitignore`, so the repository's own `.gitignore` stays as it is. Adds
+/// only the patterns it is missing, keeping everything already there.
 pub(crate) fn ignore_maypop_local(repository: &Path) -> Result<()> {
-    let path = repository.join(".gitignore");
+    let directory = repository.join(".maypop");
+    std::fs::create_dir_all(&directory)
+        .with_context(|| format!("could not create {}", directory.display()))?;
+    let path = directory.join(".gitignore");
     let existing = match std::fs::read_to_string(&path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -141,24 +145,24 @@ pub(crate) fn ignore_maypop_local(repository: &Path) -> Result<()> {
         }
     };
     let present: Vec<&str> = existing.lines().map(str::trim).collect();
-    let missing: Vec<&str> = MAYPOP_LOCAL_PATHS
+    let missing: Vec<&str> = MAYPOP_LOCAL_PATTERNS
         .iter()
         .copied()
-        .filter(|local| !present.contains(local))
+        // An unanchored entry already covers the top-level path.
+        .filter(|pattern| !present.contains(pattern) && !present.contains(&&pattern[1..]))
         .collect();
     if missing.is_empty() {
         return Ok(());
     }
     let mut contents = existing;
-    if !contents.is_empty() {
-        if !contents.ends_with('\n') {
-            contents.push('\n');
-        }
+    if !contents.is_empty() && !contents.ends_with('\n') {
         contents.push('\n');
     }
-    contents.push_str("# Maypop SDK files for this machine\n");
-    for local in missing {
-        contents.push_str(local);
+    if contents.is_empty() {
+        contents.push_str("# Maypop SDK files for this machine\n");
+    }
+    for pattern in missing {
+        contents.push_str(pattern);
         contents.push('\n');
     }
     std::fs::write(&path, contents).with_context(|| format!("could not update {}", path.display()))
@@ -536,30 +540,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn init_ignores_maypop_machine_files_once_and_keeps_committed_ones() {
+    fn init_ignores_maypop_machine_files_in_maypop_only() {
         let directory =
             std::env::temp_dir().join(format!("maypop-ignore-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&directory).unwrap();
-        std::fs::write(
-            directory.join(".gitignore"),
-            "node_modules\n.maypop/kv.json",
-        )
-        .unwrap();
+        std::fs::create_dir_all(directory.join(".maypop/publish")).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&directory)
+                .output()
+                .unwrap()
+        };
+        assert!(git(&["init", "-q"]).status.success());
+        std::fs::write(directory.join(".gitignore"), "node_modules\n").unwrap();
+        std::fs::write(directory.join(".maypop/.gitignore"), "kv.json").unwrap();
+
         ignore_maypop_local(&directory).unwrap();
         ignore_maypop_local(&directory).unwrap();
-        let contents = std::fs::read_to_string(directory.join(".gitignore")).unwrap();
+
+        let root = std::fs::read_to_string(directory.join(".gitignore")).unwrap();
+        let scoped = std::fs::read_to_string(directory.join(".maypop/.gitignore")).unwrap();
+        let ignored = |path: &str| git(&["check-ignore", "-q", path]).status.success();
+        let checks = [
+            ".maypop/local/dev.json",
+            ".maypop/.lock",
+            ".maypop/kv.json",
+            ".maypop/mcp.json",
+            ".maypop/kv-policy.json",
+            ".maypop/publish/index.html",
+        ]
+        .map(|path| (path, ignored(path)));
         std::fs::remove_dir_all(&directory).unwrap();
-        let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(&lines[..2], ["node_modules", ".maypop/kv.json"]);
+
+        assert_eq!(root, "node_modules\n");
+        let lines: Vec<&str> = scoped.lines().collect();
+        assert_eq!(lines[0], "kv.json");
+        assert!(!lines.contains(&"/kv.json"));
+        assert_eq!(lines.iter().filter(|line| **line == "/local/").count(), 1);
         assert_eq!(
-            lines
-                .iter()
-                .filter(|line| **line == ".maypop/kv.json")
-                .count(),
-            1
+            checks,
+            [
+                (".maypop/local/dev.json", true),
+                (".maypop/.lock", true),
+                (".maypop/kv.json", true),
+                (".maypop/mcp.json", true),
+                (".maypop/kv-policy.json", false),
+                (".maypop/publish/index.html", false),
+            ]
         );
-        assert!(lines.contains(&".maypop/local/") && lines.contains(&".maypop/.lock"));
-        assert!(!lines.contains(&".maypop/kv-policy.json"));
     }
 
     #[test]

@@ -52,9 +52,10 @@ The default binary has nine product commands:
   as a Git repository when needed, adds the Maypop Git remote, and installs a
   repository-local credential helper. It reuses initial app metadata from an
   existing `maypop.toml`, or creates one with the detected framework adapter.
-  It also adds the files the Maypop SDK keeps for one machine (`.maypop/local/`
-  and older files such as `.maypop/.lock` and `.maypop/dev.json`) to
-  `.gitignore`; `.maypop/kv-policy.json` stays committed.
+  It also writes a `.maypop/.gitignore` that keeps the files the Maypop SDK keeps
+  for one machine out of Git (`.maypop/local/`, and `.lock`, `dev.json`, and the other
+  files SDK 1.2 and earlier wrote into `.maypop/`), leaving the repository's own
+  `.gitignore` untouched; `.maypop/kv-policy.json` and `.maypop/publish/` stay committed.
 - `maypop publish` requires a clean worktree, builds the app, pushes the current
   Git `HEAD`, uploads the adapter's static output directly to object storage,
   and promotes that artifact as the app's next immutable version.

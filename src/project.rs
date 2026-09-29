@@ -13,20 +13,10 @@ use toml_edit::{value, Array, DocumentMut, Item, Table};
 const CONFIG_FILE: &str = "maypop.toml";
 
 /// What the Maypop SDK keeps for one machine, as patterns in
-/// `.maypop/.gitignore`: its `local/`, and the files SDKs up to 1.2 wrote straight
-/// into `.maypop/`. `kv-policy.json` and `publish/` stay committed: the platform reads
-/// them from the app's source. A committed lock names a dev server's PID that
-/// the next checkout's dev server then refuses to start over.
-const MAYPOP_LOCAL_PATTERNS: &[&str] = &[
-    "/local/",
-    "/.lock",
-    "/config.json",
-    "/dev.json",
-    "/drive/",
-    "/kv.json",
-    "/notifications.json",
-    "/mcp.json",
-];
+/// `.maypop/.gitignore`. An app initialized now gets an SDK (1.3 or later) that
+/// keeps all of it under `local/`; `kv-policy.json` and `publish/` stay committed,
+/// since the platform reads them from the app's source.
+const MAYPOP_LOCAL_PATTERNS: &[&str] = &["/local/"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Framework {
@@ -553,9 +543,9 @@ mod tests {
         };
         assert!(git(&["init", "-q"]).status.success());
         std::fs::write(directory.join(".gitignore"), "node_modules\n").unwrap();
-        std::fs::write(directory.join(".maypop/.gitignore"), "kv.json").unwrap();
 
         ignore_maypop_local(&directory).unwrap();
+        let first = std::fs::read_to_string(directory.join(".maypop/.gitignore")).unwrap();
         ignore_maypop_local(&directory).unwrap();
 
         let root = std::fs::read_to_string(directory.join(".gitignore")).unwrap();
@@ -563,9 +553,7 @@ mod tests {
         let ignored = |path: &str| git(&["check-ignore", "-q", path]).status.success();
         let checks = [
             ".maypop/local/dev.json",
-            ".maypop/.lock",
-            ".maypop/kv.json",
-            ".maypop/mcp.json",
+            ".maypop/local/.lock",
             ".maypop/kv-policy.json",
             ".maypop/publish/index.html",
         ]
@@ -573,21 +561,34 @@ mod tests {
         std::fs::remove_dir_all(&directory).unwrap();
 
         assert_eq!(root, "node_modules\n");
-        let lines: Vec<&str> = scoped.lines().collect();
-        assert_eq!(lines[0], "kv.json");
-        assert!(!lines.contains(&"/kv.json"));
-        assert_eq!(lines.iter().filter(|line| **line == "/local/").count(), 1);
+        assert_eq!(first, "# Maypop SDK files for this machine\n/local/\n");
+        assert_eq!(scoped, first);
         assert_eq!(
             checks,
             [
                 (".maypop/local/dev.json", true),
-                (".maypop/.lock", true),
-                (".maypop/kv.json", true),
-                (".maypop/mcp.json", true),
+                (".maypop/local/.lock", true),
                 (".maypop/kv-policy.json", false),
                 (".maypop/publish/index.html", false),
             ]
         );
+    }
+
+    #[test]
+    fn init_keeps_an_existing_maypop_gitignore() {
+        let directory =
+            std::env::temp_dir().join(format!("maypop-ignore-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(directory.join(".maypop")).unwrap();
+        std::fs::write(directory.join(".maypop/.gitignore"), "kv.json").unwrap();
+        ignore_maypop_local(&directory).unwrap();
+        let scoped = std::fs::read_to_string(directory.join(".maypop/.gitignore")).unwrap();
+        std::fs::write(directory.join(".maypop/.gitignore"), "local/\n").unwrap();
+        ignore_maypop_local(&directory).unwrap();
+        let unanchored = std::fs::read_to_string(directory.join(".maypop/.gitignore")).unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
+
+        assert_eq!(scoped, "kv.json\n/local/\n");
+        assert_eq!(unanchored, "local/\n");
     }
 
     #[test]

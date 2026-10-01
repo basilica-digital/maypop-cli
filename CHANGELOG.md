@@ -8,6 +8,7 @@ and this project uses [Semantic Versioning](https://semver.org/).
 ## Unreleased
 
 - Add `maypop reference import` to import released app source into local reference directories.
+- `maypop publish` now prints the URL where the published app can be opened.
 
 ## 0.4.0 - 2026-09-29
 

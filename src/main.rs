@@ -6,6 +6,7 @@ mod credentials;
 mod http;
 mod mcp;
 mod project;
+mod references;
 mod user_commands;
 
 #[cfg(feature = "admin")]
@@ -71,6 +72,27 @@ async fn run() -> Result<()> {
                 name.as_deref(),
                 description.as_deref(),
                 visibility.as_deref(),
+            )
+            .await
+        }
+        Commands::Reference {
+            command:
+                ReferenceCommands::Import {
+                    app_id,
+                    path,
+                    stdin,
+                },
+        } => {
+            let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
+            let selected_profile =
+                endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
+            references::import(
+                &api_url,
+                selected_profile,
+                token.as_deref(),
+                app_id,
+                &path,
+                stdin,
             )
             .await
         }
@@ -574,11 +596,31 @@ mod tests {
         #[cfg(not(feature = "admin"))]
         assert_eq!(
             visible,
-            ["auth", "init", "publish", "info", "app", "status", "ai", "mcp", "profile"]
+            [
+                "auth",
+                "init",
+                "reference",
+                "publish",
+                "info",
+                "app",
+                "status",
+                "ai",
+                "mcp",
+                "profile"
+            ]
         );
         #[cfg(feature = "admin")]
         for required in [
-            "auth", "init", "publish", "info", "app", "status", "ai", "mcp", "profile",
+            "auth",
+            "init",
+            "reference",
+            "publish",
+            "info",
+            "app",
+            "status",
+            "ai",
+            "mcp",
+            "profile",
         ] {
             assert!(visible.contains(&required));
         }

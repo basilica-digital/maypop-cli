@@ -50,6 +50,11 @@ pub(crate) enum Commands {
         #[arg(long, value_parser = ["private", "unlisted", "public"])]
         visibility: Option<String>,
     },
+    /// Import other apps as local source references
+    Reference {
+        #[command(subcommand)]
+        command: ReferenceCommands,
+    },
     /// Build the app and publish it with the current Git HEAD
     Publish {
         /// Optional release note for this version
@@ -461,5 +466,21 @@ pub(crate) enum McpCommands {
     Unlink {
         /// Integration ID or unique name
         integration: String,
+    },
+}
+
+/// Source-reference operations that never create or publish an app.
+#[derive(Subcommand)]
+pub(crate) enum ReferenceCommands {
+    /// Import the released source under .maypop/local/references
+    Import {
+        /// Source app ID
+        app_id: uuid::Uuid,
+        /// Destination app directory
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Read a source snapshot from stdin instead of authenticating
+        #[arg(long)]
+        stdin: bool,
     },
 }

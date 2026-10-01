@@ -278,3 +278,9 @@ checksum, and creates the GitHub Release with generated notes.
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
+
+## Import an app reference
+
+Run `maypop reference import <app-id>` from the app you are building, or add `--path <app-directory>`. The command prints the imported source directory under `.maypop/local/references/`. It reads the app's live release, requires access and source-sharing permission, and leaves your app identity and Git remote intact. It imports files without running the source or installing its dependencies. Copy only the code and assets you need into your app; the reference directory is ignored by Git and excluded from publishing.
+
+Studio supplies an authorized source snapshot to the same importer with `--stdin`; the sandbox does not receive a credential that reaches the source app.

@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+- Add `maypop reference import` to import released app source into local reference directories.
+
 ## 0.4.0 - 2026-09-29
 
 ### Changed

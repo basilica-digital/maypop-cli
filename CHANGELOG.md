@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.5.1 - 2026-10-01
+
 ### Fixed
 
 - Errors print their full cause, so a rejected `maypop publish` shows the Git server's reason instead of only `Git push failed`.

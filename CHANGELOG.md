@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- Errors print their full cause, so a rejected `maypop publish` shows the Git server's reason instead of only `Git push failed`.
+
 ## 0.5.0 - 2026-10-01
 
 ### Added

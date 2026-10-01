@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.5.1 - 2026-10-01
+
 ### Fixed
 
 - Importing an app reference keeps Git repositories clean so references do not block Studio publishing.

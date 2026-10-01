@@ -303,7 +303,19 @@ pub(crate) async fn publish(
         published.n,
         short_sha(&head)
     );
+    if let Some(url) = web_app_url(&api_url, &app_id) {
+        println!("Open it at {url}");
+    }
     Ok(())
+}
+
+/// The web app serves on the API host minus its `api.` label
+/// (`api.app.maypop.ai` -> `app.maypop.ai`); the app page is `/app/:appId`.
+/// `None` for API hosts that don't follow that scheme (e.g. localhost).
+fn web_app_url(api_url: &str, app_id: &str) -> Option<String> {
+    let (scheme, rest) = trim_url(api_url).split_once("://")?;
+    let host = rest.strip_prefix("api.")?;
+    Some(format!("{scheme}://{host}/app/{app_id}"))
 }
 
 /// Show the connected app without changing local or remote state.
@@ -792,6 +804,19 @@ mod tests {
         assert_eq!(resolved.allow_remixing, Some(true));
         assert_eq!(resolved.tags, Some(Vec::new()));
         assert_eq!(resolved.thumbnail, None);
+    }
+
+    #[test]
+    fn web_app_url_drops_the_api_label() {
+        assert_eq!(
+            web_app_url("https://api.app.maypop.ai/", "a1").as_deref(),
+            Some("https://app.maypop.ai/app/a1")
+        );
+        assert_eq!(
+            web_app_url("https://api.dev.maypop.ai", "a1").as_deref(),
+            Some("https://dev.maypop.ai/app/a1")
+        );
+        assert_eq!(web_app_url("http://localhost:3000", "a1"), None);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use base64::Engine;
@@ -196,6 +197,69 @@ fn ensure_directory(path: &Path) -> Result<()> {
     }
 }
 
+fn ignore_reference_files(repository: &Path) -> Result<()> {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(repository)
+            .output()
+    };
+    let location = git(&[
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "info/exclude",
+    ])
+    .context("could not locate the app's Git exclude file")?;
+    if !location.status.success() {
+        if repository.join(".git").exists() {
+            bail!("could not locate the app's Git exclude file");
+        }
+        return crate::project::ignore_maypop_local(repository);
+    }
+    let prefix = git(&["rev-parse", "--show-prefix"])?;
+    if !prefix.status.success() {
+        bail!("could not locate the app within its Git repository");
+    }
+    let prefix = String::from_utf8(prefix.stdout)?;
+    let prefix = prefix.strip_suffix('\n').unwrap_or(&prefix);
+    if prefix.contains(['\n', '\r']) {
+        bail!("the app directory contains a line break");
+    }
+    let escaped: String = prefix
+        .chars()
+        .flat_map(|ch| {
+            if matches!(ch, '\\' | '*' | '?' | '[') {
+                vec!['\\', ch]
+            } else {
+                vec![ch]
+            }
+        })
+        .collect();
+    let pattern = format!("/{escaped}.maypop/local/");
+    let exclude = PathBuf::from(String::from_utf8(location.stdout)?.trim_end_matches(['\n', '\r']));
+    if std::fs::symlink_metadata(&exclude).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        bail!("the app's Git exclude file is a symbolic link");
+    }
+    let existing = match std::fs::read_to_string(&exclude) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    if existing.lines().any(|line| line == pattern) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(exclude.parent().context("Git exclude file has no parent")?)?;
+    let separator = if existing.is_empty() || existing.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    // Reference snapshots belong to this checkout; importing cannot dirty app-owned ignore files.
+    std::fs::write(exclude, format!("{existing}{separator}{pattern}\n"))?;
+    Ok(())
+}
+
 fn import_snapshot(repository: &Path, app_id: Uuid, snapshot: Snapshot) -> Result<PathBuf> {
     if snapshot.app_id != app_id || snapshot.revision < 1 {
         bail!("reference snapshot does not match the requested app release");
@@ -213,7 +277,7 @@ fn import_snapshot(repository: &Path, app_id: Uuid, snapshot: Snapshot) -> Resul
     if std::fs::symlink_metadata(&ignore).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         bail!(".maypop/.gitignore is a symbolic link");
     }
-    crate::project::ignore_maypop_local(&repository)?;
+    ignore_reference_files(&repository)?;
     let temporary = directory.join(format!(".import-{}", Uuid::new_v4()));
     std::fs::create_dir(&temporary)?;
     let result = (|| -> Result<PathBuf> {
@@ -242,89 +306,4 @@ fn import_snapshot(repository: &Path, app_id: Uuid, snapshot: Snapshot) -> Resul
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn snapshot(app_id: Uuid, files: &[(&str, &[u8])]) -> Snapshot {
-        Snapshot {
-            app_id,
-            name: "Reference".into(),
-            revision: 2,
-            source_commit_sha: Some("a".repeat(40)),
-            files: files
-                .iter()
-                .map(|(path, bytes)| ReferenceFile {
-                    path: path.to_string(),
-                    content: base64::engine::general_purpose::STANDARD.encode(bytes),
-                })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn source_import_rejects_escaping_private_and_conflicting_paths() {
-        let id = Uuid::new_v4();
-        for path in [
-            "../secret",
-            "/tmp/secret",
-            "a\\b",
-            ".chat/session.json",
-            ".maypop/local/key",
-            ".env.production",
-        ] {
-            assert!(
-                decoded_files(&snapshot(id, &[(path, b"x")])).is_err(),
-                "{path}"
-            );
-        }
-        assert!(decoded_files(&snapshot(id, &[("src", b"x"), ("src/App.tsx", b"y")])).is_err());
-        assert!(decoded_files(&snapshot(id, &[("src.ts", b"x"), ("src.ts", b"y")])).is_err());
-    }
-
-    #[test]
-    fn legacy_import_reads_editable_embedded_source_and_rejects_unsafe_paths() {
-        let id = Uuid::new_v4();
-        let html = br#"<script type="application/json" id="__studio-workspace-files__">{"index.html":"original","src/App.tsx":"component","logo.png":"data:image/png;base64,AP8="}</script>"#;
-        let mut source = snapshot(id, &[("index.html", html)]);
-        source.source_commit_sha = None;
-        let files = decoded_files(&source).unwrap();
-        assert_eq!(files["src/App.tsx"], b"component");
-        assert_eq!(files["index.html"], b"original");
-        assert_eq!(files["logo.png"], [0, 255]);
-        source.files[0].content = base64::engine::general_purpose::STANDARD.encode(
-            br#"<script id="__studio-workspace-files__">{"index.html":"ok","../escape":"bad"}</script>"#);
-        assert!(decoded_files(&source).is_err());
-    }
-
-    #[test]
-    fn importing_binary_source_keeps_each_snapshot_separate_and_git_ignored() {
-        let root = std::env::temp_dir().join(format!("maypop-reference-{}", Uuid::new_v4()));
-        std::fs::create_dir(&root).unwrap();
-        let id = Uuid::new_v4();
-        let first = import_snapshot(&root, id, snapshot(id, &[("image.png", &[0, 255])])).unwrap();
-        let second = import_snapshot(&root, id, snapshot(id, &[("src.ts", b"changed")])).unwrap();
-        assert_ne!(first, second);
-        assert_eq!(
-            std::fs::read(root.join(first).join("image.png")).unwrap(),
-            [0, 255]
-        );
-        assert!(std::fs::read_to_string(root.join(".maypop/.gitignore"))
-            .unwrap()
-            .contains("/local/"));
-        assert!(import_snapshot(&root, Uuid::new_v4(), snapshot(id, &[("x", b"x")])).is_err());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn importing_never_follows_a_link_out_of_the_app() {
-        let root = std::env::temp_dir().join(format!("maypop-reference-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("outside")).unwrap();
-        std::fs::create_dir_all(root.join("app/.maypop")).unwrap();
-        std::os::unix::fs::symlink(root.join("outside"), root.join("app/.maypop/local")).unwrap();
-        let id = Uuid::new_v4();
-        assert!(import_snapshot(&root.join("app"), id, snapshot(id, &[("src.ts", b"x")])).is_err());
-        assert_eq!(std::fs::read_dir(root.join("outside")).unwrap().count(), 0);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}
+mod tests;

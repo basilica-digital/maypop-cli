@@ -10,12 +10,14 @@ and this project uses [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Errors print their full cause, so a rejected `maypop publish` shows the Git server's reason instead of only `Git push failed`.
+- Importing an app reference keeps Git repositories clean so references do not block Studio publishing.
 
 ## 0.5.0 - 2026-10-01
 
 ### Added
 
 - Add `maypop reference import` to import released app source into local reference directories.
+- `maypop publish` now prints the URL where the published app can be opened.
 
 ## 0.4.0 - 2026-09-29
 

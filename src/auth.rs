@@ -2,6 +2,7 @@
 
 use crate::credentials::{CredentialUser, Credentials};
 use crate::http;
+use crate::user_commands::successful_json;
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -83,7 +84,9 @@ pub(crate) async fn authenticate(
         }
         tokio::time::sleep(Duration::from_secs(interval)).await;
         let response = http::json(
-            client.post(format!("{api_url}/cli/auth/token")),
+            client
+                .post(format!("{api_url}/cli/auth/token"))
+                .timeout(Duration::from_secs(30)),
             &TokenRequest {
                 device_code: &start.device_code,
             },
@@ -126,18 +129,6 @@ pub(crate) fn default_device_name() -> String {
         (_, Some(host)) => host,
         _ => "Maypop CLI".into(),
     }
-}
-
-async fn successful_json<T: for<'de> Deserialize<'de>>(response: reqwest::Response) -> Result<T> {
-    let status = response.status();
-    if status.is_success() {
-        return response
-            .json::<T>()
-            .await
-            .context("Maypop returned an invalid authentication response");
-    }
-    let body = response.text().await.unwrap_or_default();
-    bail!("Maypop returned {status}: {body}")
 }
 
 fn open_browser(url: &str) -> Result<()> {
@@ -188,5 +179,61 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(response, TokenResponse::Complete { .. }));
+    }
+
+    /// Answer each request on `listener` with the next canned status and body.
+    fn serve(listener: std::net::TcpListener, replies: Vec<(&'static str, &'static str)>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        std::thread::spawn(move || {
+            for (status, body) in replies {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                reader.read_exact(&mut vec![0; length]).unwrap();
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn a_plan_refusal_stops_the_poll_with_a_billing_link() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
+        serve(
+            listener,
+            vec![
+                (
+                    "200 OK",
+                    r#"{"deviceCode":"mda1.x.y","userCode":"ZELL-JC3J","verificationUri":"https://app.maypop.ai/cli/auth","verificationUriComplete":"https://app.maypop.ai/cli/auth?code=ZELLJC3J","expiresIn":600,"interval":1}"#,
+                ),
+                (
+                    "402 Payment Required",
+                    r#"{"code":"plan_required","error":"The Maypop CLI is included with Pro.","billingUrl":"https://app.maypop.ai/user/user_1?tab=billing"}"#,
+                ),
+            ],
+        );
+
+        let Err(error) = authenticate(&Client::new(), &api_url, "test", true).await else {
+            panic!("a plan refusal ends authentication");
+        };
+        assert_eq!(
+            error.to_string(),
+            "The Maypop CLI needs a Pro plan. Upgrade at https://app.maypop.ai/user/user_1?tab=billing"
+        );
     }
 }

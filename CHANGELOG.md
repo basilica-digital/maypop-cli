@@ -7,6 +7,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- `maypop auth` stops when the account's plan refuses CLI access instead of
+  waiting for approval, and plan errors link to the billing page.
+
 ## 0.5.0 - 2026-10-01
 
 ### Added

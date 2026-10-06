@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.5.2 - 2026-10-05
+
 ### Added
 
 - `maypop publish` accepts the app Git remote (`/git/apps/{app}`) used by Studio as well as the per-user remote, without rewriting one into the other.

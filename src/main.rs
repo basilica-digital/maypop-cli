@@ -24,7 +24,7 @@ use std::process::ExitCode;
 #[tokio::main]
 async fn main() -> ExitCode {
     if let Err(e) = run().await {
-        eprintln!("Error: {e}");
+        eprintln!("Error: {e:#}");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS

@@ -497,7 +497,7 @@ pub(crate) async fn successful_json<T: for<'de> Deserialize<'de>>(
             .context("Maypop returned invalid JSON");
     }
     let body = response.text().await.unwrap_or_default();
-    bail!("Maypop returned {status}: {body}")
+    Err(http_request::failure(status, &body))
 }
 
 fn prepare_repository(path: &Path) -> Result<PathBuf> {

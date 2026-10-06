@@ -1,6 +1,7 @@
 //! Direct upload of a built web application to Maypop's immutable bundle store.
 
 use crate::http;
+use crate::user_commands::successful_json;
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -252,25 +253,13 @@ async fn upload_to_policy(
     Ok(())
 }
 
-async fn successful_json<T: for<'de> Deserialize<'de>>(response: reqwest::Response) -> Result<T> {
-    let status = response.status();
-    if status.is_success() {
-        return response
-            .json()
-            .await
-            .context("Maypop returned invalid JSON");
-    }
-    let body = response.text().await.unwrap_or_default();
-    bail!("Maypop returned {status}: {body}")
-}
-
 async fn successful_empty(response: reqwest::Response) -> Result<()> {
     let status = response.status();
     if status.is_success() {
         return Ok(());
     }
     let body = response.text().await.unwrap_or_default();
-    bail!("Maypop returned {status}: {body}")
+    Err(http::failure(status, &body))
 }
 
 fn trim_url(url: &str) -> &str {

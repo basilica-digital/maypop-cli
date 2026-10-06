@@ -221,16 +221,13 @@ pub(crate) async fn publish(
         &user.git_user_id,
         &app_id,
     )?;
-    repair_legacy_remote(
+    ensure_publish_origin(
         &repository,
         &api_url,
-        legacy_remote.as_str(),
         expected_remote.as_str(),
+        legacy_remote.as_str(),
+        &app_id,
     )?;
-    let configured_remote = successful_git(&repository, &["remote", "get-url", "origin"])?;
-    if configured_remote.trim_end_matches('/') != expected_remote.as_str().trim_end_matches('/') {
-        bail!("origin is not the Maypop Git remote configured for this app");
-    }
     let dirty = successful_git(&repository, &["status", "--porcelain"])?;
     if !dirty.is_empty() {
         bail!("the Git worktree is not clean; commit or stash changes before publishing");
@@ -451,13 +448,17 @@ pub(crate) fn git_credential(operation: &str, api_url: &str, profile: Option<&st
             return Ok(());
         }
     }
+    let app_id = std::env::current_dir()
+        .ok()
+        .and_then(|dir| repository_root(dir).ok())
+        .and_then(|root| git_config(&root, APP_ID_KEY).ok().flatten());
     let saved = if let Some(profile) = profile {
         credentials::load_for(api_url, Some(profile))?
-            .filter(|saved| credential_matches(&saved.user, &path))
+            .filter(|saved| credential_matches(&saved.user, &path, app_id.as_deref()))
     } else {
         credentials::all_for(api_url)?
             .into_iter()
-            .find(|saved| credential_matches(&saved.user, &path))
+            .find(|saved| credential_matches(&saved.user, &path, app_id.as_deref()))
     };
     let Some(saved) = saved else {
         return Ok(());
@@ -574,6 +575,47 @@ fn configure_credential_helper(repository: &Path, api_url: &str, remote: &str) -
         &["config", "--local", "credential.useHttpPath", "true"],
     )?;
     Ok(())
+}
+
+fn ensure_publish_origin(
+    repository: &Path,
+    api_url: &str,
+    expected_remote: &str,
+    legacy_remote: &str,
+    app_id: &str,
+) -> Result<()> {
+    repair_legacy_remote(repository, api_url, legacy_remote, expected_remote)?;
+    let fetch = successful_git(repository, &["remote", "get-url", "origin"])?;
+    let push = successful_git(repository, &["remote", "get-url", "--push", "origin"])?;
+    if origin_is_configured_for_app(&fetch, &push, api_url, expected_remote, app_id) {
+        return Ok(());
+    }
+    bail!("origin is not the Maypop Git remote configured for this app");
+}
+
+fn origin_is_configured_for_app(
+    fetch_url: &str,
+    push_url: &str,
+    api_url: &str,
+    expected_remote: &str,
+    app_id: &str,
+) -> bool {
+    if trim_url(fetch_url) == trim_url(expected_remote) {
+        return true;
+    }
+    let app_remote = format!("{}/git/apps/{}", trim_url(api_url), app_id);
+    if trim_url(fetch_url) == trim_url(&app_remote) {
+        return true;
+    }
+    let expected_path = format!("/git/apps/{app_id}");
+    git_url_path(fetch_url).as_deref() == Some(expected_path.as_str())
+        && trim_url(push_url) == trim_url(&app_remote)
+}
+
+fn git_url_path(url: &str) -> Option<String> {
+    Url::parse(url)
+        .ok()
+        .map(|parsed| parsed.path().trim_end_matches('/').to_string())
 }
 
 fn repair_legacy_remote(
@@ -696,9 +738,18 @@ fn credential_request(input: &str) -> Option<(String, String)> {
     Some((format!("{protocol}://{host}"), (*path).to_string()))
 }
 
-fn credential_matches(user: &CredentialUser, path: &str) -> bool {
-    let expected_prefix = format!("git/{}/", user.git_user_id);
-    !user.git_user_id.is_empty() && path.trim_start_matches('/').starts_with(&expected_prefix)
+fn credential_matches(user: &CredentialUser, path: &str, app_id: Option<&str>) -> bool {
+    let path = path.trim_start_matches('/');
+    if !user.git_user_id.is_empty() {
+        let expected_prefix = format!("git/{}/", user.git_user_id);
+        if path.starts_with(&expected_prefix) {
+            return true;
+        }
+    }
+    match app_id {
+        Some(app_id) if !app_id.is_empty() => path == format!("git/apps/{app_id}"),
+        _ => false,
+    }
 }
 
 fn short_sha(sha: &str) -> &str {
@@ -850,8 +901,11 @@ mod tests {
             git_user_id: "user_1".into(),
             git_server_url: "https://api.app.maypop.ai/git".into(),
         };
-        assert!(credential_matches(&user, "git/user_1/app"));
-        assert!(!credential_matches(&user, "git/user_2/app"));
+        assert!(credential_matches(&user, "git/user_1/app", Some("app_1")));
+        assert!(!credential_matches(&user, "git/user_2/app", Some("app_1")));
+        assert!(credential_matches(&user, "git/apps/app_1", Some("app_1")));
+        assert!(!credential_matches(&user, "git/apps/other", Some("app_1")));
+        assert!(!credential_matches(&user, "git/apps/app_1", None));
     }
 
     #[test]
@@ -924,6 +978,119 @@ mod tests {
         assert!(helpers
             .lines()
             .any(|line| line == "!maypop --url='http://localhost:3000' git-credential"));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn temp_git_repo() -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("maypop-cli-git-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        run_git(&directory, &["init", "-b", "main"]).unwrap();
+        directory
+    }
+
+    #[test]
+    fn publish_accepts_the_app_repo_origin_without_rewriting_it() {
+        let directory = temp_git_repo();
+        let api = "http://localhost:3000";
+        let app_id = "app_1";
+        let origin = format!("{api}/git/apps/{app_id}");
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        configure_repository(&directory, api, app_id, &origin).unwrap();
+
+        ensure_publish_origin(&directory, api, expected, legacy, app_id).unwrap();
+        assert_eq!(
+            successful_git(&directory, &["remote", "get-url", "origin"]).unwrap(),
+            origin
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn publish_accepts_a_public_fetch_url_with_the_api_push_url() {
+        let directory = temp_git_repo();
+        let api = "http://localhost:3000";
+        let app_id = "app_1";
+        let fetch = format!("http://127.0.0.1:18080/git/apps/{app_id}");
+        let push = format!("{api}/git/apps/{app_id}");
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        configure_repository(&directory, api, app_id, &fetch).unwrap();
+        run_git(
+            &directory,
+            &["remote", "set-url", "--push", "origin", &push],
+        )
+        .unwrap();
+
+        ensure_publish_origin(&directory, api, expected, legacy, app_id).unwrap();
+        assert_eq!(
+            successful_git(&directory, &["remote", "get-url", "origin"]).unwrap(),
+            fetch
+        );
+        assert_eq!(
+            successful_git(&directory, &["remote", "get-url", "--push", "origin"]).unwrap(),
+            push
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn publish_accepts_the_git_server_per_user_origin_without_rewriting_it() {
+        let directory = temp_git_repo();
+        let api = "http://localhost:3000";
+        let app_id = "app_1";
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        configure_repository(&directory, api, app_id, expected).unwrap();
+
+        ensure_publish_origin(&directory, api, expected, legacy, app_id).unwrap();
+        assert_eq!(
+            successful_git(&directory, &["remote", "get-url", "origin"]).unwrap(),
+            expected
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn publish_rejects_a_foreign_origin() {
+        let directory = temp_git_repo();
+        let api = "http://localhost:3000";
+        let app_id = "app_1";
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        configure_repository(&directory, api, app_id, "https://example.com/other.git").unwrap();
+
+        let error = ensure_publish_origin(&directory, api, expected, legacy, app_id).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("origin is not the Maypop Git remote configured for this app"));
+        assert_eq!(
+            successful_git(&directory, &["remote", "get-url", "origin"]).unwrap(),
+            "https://example.com/other.git"
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn publish_rejects_an_app_repo_path_on_an_unrelated_host() {
+        let directory = temp_git_repo();
+        let api = "http://localhost:3000";
+        let app_id = "app_1";
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        let foreign = format!("https://example.com/git/apps/{app_id}");
+        configure_repository(&directory, api, app_id, &foreign).unwrap();
+
+        let error = ensure_publish_origin(&directory, api, expected, legacy, app_id).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("origin is not the Maypop Git remote configured for this app"));
 
         std::fs::remove_dir_all(directory).unwrap();
     }

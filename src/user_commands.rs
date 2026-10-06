@@ -607,11 +607,16 @@ fn origin_is_configured_for_app(
     let Some(fetch) = canonical_git_url(fetch_url) else {
         return false;
     };
-    let expected = canonical_git_url(expected_remote);
-    let app_remote = canonical_git_url(&format!("{}/git/apps/{}", trim_url(api_url), app_id));
-    let accepted_push = if Some(fetch.as_str()) == expected.as_deref() {
+    let Some(expected) = canonical_git_url(expected_remote) else {
+        return false;
+    };
+    let Some(app_remote) = canonical_git_url(&format!("{}/git/apps/{}", trim_url(api_url), app_id))
+    else {
+        return false;
+    };
+    let accepted_push = if fetch == expected {
         expected
-    } else if Some(fetch.as_str()) == app_remote.as_deref() {
+    } else if fetch == app_remote {
         app_remote
     } else {
         let expected_path = format!("/git/apps/{app_id}");
@@ -623,7 +628,7 @@ fn origin_is_configured_for_app(
     !push_urls.is_empty()
         && push_urls
             .iter()
-            .all(|push| canonical_git_url(push).as_deref() == accepted_push.as_deref())
+            .all(|push| canonical_git_url(push).as_deref() == Some(accepted_push.as_str()))
 }
 
 fn canonical_git_url(url: &str) -> Option<String> {
@@ -1065,6 +1070,27 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn public_fetch_does_not_accept_a_push_url_that_fails_to_canonicalize() {
+        assert!(!origin_is_configured_for_app(
+            "http://127.0.0.1:18080/git/apps/app_1",
+            &[
+                "https://evil.example/git/apps/app_1?x=1".into(),
+                "http://user@evil.example/git/apps/app_1".into(),
+            ],
+            "http://user@localhost:3000",
+            "http://localhost:3005/git/user_1/app_1",
+            "app_1",
+        ));
+        assert!(!origin_is_configured_for_app(
+            "http://127.0.0.1:18080/git/apps/app_1",
+            &["http://localhost:3000/git/apps/app_1".into()],
+            "http://user@localhost:3000",
+            "http://localhost:3005/git/user_1/app_1",
+            "app_1",
+        ));
+    }
+
     fn temp_git_repo() -> PathBuf {
         let directory =
             std::env::temp_dir().join(format!("maypop-cli-git-{}", uuid::Uuid::new_v4()));
@@ -1292,6 +1318,11 @@ mod tests {
         configure_repository(&directory, api, app_id, &origin).unwrap();
         run_git(
             &directory,
+            &["remote", "set-url", "--push", "origin", &origin],
+        )
+        .unwrap();
+        run_git(
+            &directory,
             &[
                 "remote",
                 "set-url",
@@ -1302,11 +1333,28 @@ mod tests {
             ],
         )
         .unwrap();
+        let push_urls = successful_git(
+            &directory,
+            &["remote", "get-url", "--all", "--push", "origin"],
+        )
+        .unwrap();
+        assert!(push_urls.lines().any(|line| line == origin));
+        assert!(push_urls
+            .lines()
+            .any(|line| line == "https://example.com/other.git"));
 
         assert_rejected_origin(&directory, api, expected, legacy, app_id);
         assert_eq!(
             successful_git(&directory, &["remote", "get-url", "origin"]).unwrap(),
             origin
+        );
+        assert_eq!(
+            successful_git(
+                &directory,
+                &["remote", "get-url", "--all", "--push", "origin"],
+            )
+            .unwrap(),
+            push_urls
         );
 
         std::fs::remove_dir_all(directory).unwrap();

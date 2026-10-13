@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.6.0 - 2026-10-13
+
 ### Changed
 
 - `maypop publish` pushes through whichever remote points at the app, matched

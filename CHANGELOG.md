@@ -7,6 +7,13 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed
+
+- `maypop publish` pushes through whichever remote points at the app, matched
+  by URL, so `origin` can stay on GitHub or GitLab. It sets the branch's
+  upstream only when the branch has none.
+- `maypop init` adds the Maypop remote as `maypop` and leaves `origin` alone.
+
 ### Fixed
 
 - `maypop auth` stops when the account's plan refuses CLI access instead of

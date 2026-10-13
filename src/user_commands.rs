@@ -258,24 +258,22 @@ pub(crate) async fn publish(
     // The Maypop Git server does not yet accept delta-compressed thin packs.
     // Keep the compatibility settings scoped to this push instead of changing
     // the user's global or repository Git configuration.
-    let mut push = vec![
-        "-c",
-        "pack.window=0",
-        "-c",
-        "pack.depth=0",
-        "push",
-        "--no-thin",
-    ];
-    // A branch that already tracks a remote keeps tracking it.
-    let tracks_a_remote = git_output(&repository, &["rev-parse", "--symbolic-full-name", "@{u}"])?
-        .status
-        .success();
-    if !tracks_a_remote {
-        push.push("--set-upstream");
-    }
-    push.extend([remote.as_str(), "HEAD:refs/heads/main"]);
-    run_git_with_auth(&repository, &push, &api_url, &token)
-        .context("Git push failed; fix the Git error and run `maypop publish` again")?;
+    run_git_with_auth(
+        &repository,
+        &[
+            "-c",
+            "pack.window=0",
+            "-c",
+            "pack.depth=0",
+            "push",
+            "--no-thin",
+            &remote,
+            "HEAD:refs/heads/main",
+        ],
+        &api_url,
+        &token,
+    )
+    .context("Git push failed; fix the Git error and run `maypop publish` again")?;
     let bundle_id = bundle_upload::upload_directory(
         &http,
         &api_url,

@@ -10,8 +10,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - `maypop publish` pushes through whichever remote points at the app, matched
-  by URL, so `origin` can stay on GitHub or GitLab. It sets the branch's
-  upstream only when the branch has none.
+  by URL, so `origin` can stay on GitHub or GitLab. It no longer sets the
+  branch's upstream, so publishing leaves the remote a branch tracks alone.
 - `maypop init` adds the Maypop remote as `maypop` and leaves `origin` alone.
 
 ### Fixed

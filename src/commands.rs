@@ -61,6 +61,8 @@ pub(crate) enum Commands {
         #[arg(long)]
         changelog: Option<String>,
     },
+    /// Move the Git remote onto this app's repository and push HEAD
+    Migrate,
     /// Show the current app
     Info,
     /// Manage the app connected to the current repository

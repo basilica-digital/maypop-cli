@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use url::Url;
 
 pub(crate) const DEFAULT_API_URL: &str = "https://api.app.maypop.ai";
 const FALLBACK_PROFILE: &str = "default";
@@ -87,10 +88,10 @@ pub(crate) fn selected_profile(explicit: Option<&str>) -> Result<String> {
 /// Resolve an API URL from an override or a saved profile.
 pub(crate) fn api_url_for(profile: &str, explicit_url: Option<&str>) -> Result<String> {
     if let Some(url) = explicit_url {
-        return Ok(normalize_url(url).to_string());
+        return api_origin(url);
     }
     if let Some(credentials) = profile_credentials(profile)? {
-        return Ok(normalize_url(&credentials.api_url).to_string());
+        return api_origin(&credentials.api_url);
     }
     if profile == FALLBACK_PROFILE {
         return Ok(DEFAULT_API_URL.into());
@@ -123,24 +124,24 @@ fn select_credentials(
         let Some(credentials) = store.profiles.get(name).cloned() else {
             return Ok(None);
         };
-        if normalize_url(&credentials.api_url) != normalize_url(api_url) {
+        if !api_urls_match(&credentials.api_url, api_url) {
             bail!(
                 "profile `{name}` uses {}, but this app uses {}",
-                normalize_url(&credentials.api_url),
-                normalize_url(api_url)
+                api_origin(&credentials.api_url).unwrap_or_else(|_| credentials.api_url.clone()),
+                api_origin(api_url).unwrap_or_else(|_| api_url.to_string())
             );
         }
         return Ok(Some(credentials));
     }
     if let Some(credentials) = store.profiles.get(&store.default_profile) {
-        if normalize_url(&credentials.api_url) == normalize_url(api_url) {
+        if api_urls_match(&credentials.api_url, api_url) {
             return Ok(Some(credentials.clone()));
         }
     }
     Ok(store
         .profiles
         .values()
-        .find(|credentials| normalize_url(&credentials.api_url) == normalize_url(api_url))
+        .find(|credentials| api_urls_match(&credentials.api_url, api_url))
         .cloned())
 }
 
@@ -149,7 +150,7 @@ pub(crate) fn all_for(api_url: &str) -> Result<Vec<Credentials>> {
     Ok(load_store(&path()?)?
         .into_iter()
         .flat_map(|store| store.profiles.into_values())
-        .filter(|credentials| normalize_url(&credentials.api_url) == normalize_url(api_url))
+        .filter(|credentials| api_urls_match(&credentials.api_url, api_url))
         .collect())
 }
 
@@ -281,8 +282,23 @@ fn save_at(path: &Path, store: &CredentialStore) -> Result<()> {
     Ok(())
 }
 
-fn normalize_url(url: &str) -> &str {
-    url.trim_end_matches('/')
+pub(crate) fn api_origin(api_url: &str) -> Result<String> {
+    let parsed = Url::parse(api_url.trim_end_matches('/')).context("invalid Maypop API URL")?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        bail!("Maypop API URL must not include credentials");
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        bail!("Maypop API URL must not include a query or fragment");
+    }
+    let path = parsed.path();
+    if !path.is_empty() && path != "/" {
+        bail!("Maypop API URL must not include a path");
+    }
+    Ok(parsed.origin().ascii_serialization())
+}
+
+pub(crate) fn api_urls_match(left: &str, right: &str) -> bool {
+    matches!((api_origin(left), api_origin(right)), (Ok(a), Ok(b)) if a == b)
 }
 
 #[cfg(test)]
@@ -380,5 +396,13 @@ mod tests {
             .unwrap();
         assert_eq!(development.user.username, "dev-user");
         assert!(select_credentials(&store, DEFAULT_API_URL, Some("dev")).is_err());
+        let by_port = select_credentials(&store, "https://api.app.maypop.ai:443", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(by_port.token, "mpat_prod-user");
+        let by_case = select_credentials(&store, "https://API.app.maypop.ai", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(by_case.token, "mpat_prod-user");
     }
 }

@@ -1,6 +1,6 @@
 //! User-facing app workflows built around a normal local Git repository.
 
-use crate::credentials::{self, CredentialUser};
+use crate::credentials::{self, api_origin, api_urls_match, CredentialUser};
 use crate::http as http_request;
 use crate::{bundle_upload, project};
 use anyhow::{bail, Context, Result};
@@ -11,6 +11,13 @@ use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+#[cfg(test)]
+thread_local! {
+    static LAST_GIT_ARGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static TEST_GIT_CONFIG_GLOBAL: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 const APP_ID_KEY: &str = "maypop.app-id";
 const API_URL_KEY: &str = "maypop.api-url";
@@ -181,19 +188,13 @@ pub(crate) async fn init(
     .await
     .context("could not create the Maypop app")?;
     let created = successful_json::<CreateAppResponse>(response).await?;
-    let remote = git_remote_url(
-        git_server_url(&user, api_url).as_str(),
-        &user.git_user_id,
-        &created.app_id,
-    )?;
-    configure_repository(&repository, api_url, &created.app_id, remote.as_str()).with_context(
-        || {
-            format!(
-                "app {} was created, but the local Git repository could not be configured",
-                created.app_id
-            )
-        },
-    )?;
+    let remote = app_repo_remote(api_url, &created.app_id)?;
+    configure_repository(&repository, api_url, &created.app_id, &remote).with_context(|| {
+        format!(
+            "app {} was created, but the local Git repository could not be configured",
+            created.app_id
+        )
+    })?;
     println!("Initialized Maypop app {} ({app_name}).", created.app_id);
     println!("Git remote: {remote}");
     println!("Build configuration: {}", config_path.display());
@@ -214,6 +215,9 @@ pub(crate) async fn publish(
     let token = required_token(&api_url, profile, explicit_token)?;
     let http = client(Some(&token))?;
     let user = current_user(&http, &api_url).await?;
+    if user.git_user_id.is_empty() {
+        bail!("your saved login predates Git access; run `maypop auth` again");
+    }
     let expected_remote = git_remote_url(
         git_server_url(&user, &api_url).as_str(),
         &user.git_user_id,
@@ -255,25 +259,8 @@ pub(crate) async fn publish(
         build.output_directory.display()
     );
 
-    // The Maypop Git server does not yet accept delta-compressed thin packs.
-    // Keep the compatibility settings scoped to this push instead of changing
-    // the user's global or repository Git configuration.
-    run_git_with_auth(
-        &repository,
-        &[
-            "-c",
-            "pack.window=0",
-            "-c",
-            "pack.depth=0",
-            "push",
-            "--no-thin",
-            &remote,
-            "HEAD:refs/heads/main",
-        ],
-        &api_url,
-        &token,
-    )
-    .context("Git push failed; fix the Git error and run `maypop publish` again")?;
+    push_head_to_app(&repository, &remote, &api_url, &token)
+        .context("Git push failed; fix the Git error and run `maypop publish` again")?;
     let bundle_id = bundle_upload::upload_directory(
         &http,
         &api_url,
@@ -305,6 +292,48 @@ pub(crate) async fn publish(
     if let Some(url) = web_app_url(&api_url, &app_id) {
         println!("Open it at {url}");
     }
+    Ok(())
+}
+
+/// Move a retired Maypop remote onto the app repository and push `HEAD`.
+pub(crate) async fn migrate(profile: Option<&str>, explicit_token: Option<&str>) -> Result<()> {
+    let repository = repository_root(std::env::current_dir()?)?;
+    let app_id = required_git_config(&repository, APP_ID_KEY)?;
+    let api_url = required_git_config(&repository, API_URL_KEY)?;
+    let token = required_token(&api_url, profile, explicit_token)?;
+    let http = client(Some(&token))?;
+    let user = current_user(&http, &api_url).await?;
+    if user.git_user_id.is_empty() {
+        bail!("your saved login predates Git access; run `maypop auth` again");
+    }
+    let expected_remote = git_remote_url(
+        git_server_url(&user, &api_url).as_str(),
+        &user.git_user_id,
+        &app_id,
+    )?;
+    let legacy_remote = git_remote_url(
+        &format!("{}/git", trim_url(&api_url)),
+        &user.git_user_id,
+        &app_id,
+    )?;
+    let remote = find_app_remote(
+        &repository,
+        &api_url,
+        expected_remote.as_str(),
+        legacy_remote.as_str(),
+        &app_id,
+    )?;
+    let head = successful_git(&repository, &["rev-parse", "HEAD"])?;
+    if head.len() != 40 || !head.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("Git HEAD is not a SHA-1 commit");
+    }
+    push_head_to_app(&repository, &remote, &api_url, &token)
+        .context("Git push failed; fix the Git error and run `maypop migrate` again")?;
+    println!(
+        "Pushed {} to {}.",
+        short_sha(&head),
+        app_repo_remote(&api_url, &app_id)?
+    );
     Ok(())
 }
 
@@ -442,7 +471,7 @@ pub(crate) fn git_credential(operation: &str, api_url: &str, profile: Option<&st
     if let (Ok(token), Ok(configured_url)) =
         (std::env::var("MAYPOP_TOKEN"), std::env::var("MAYPOP_URL"))
     {
-        if trim_url(&configured_url) == trim_url(api_url)
+        if api_urls_match(&configured_url, api_url)
             && path.trim_start_matches('/').starts_with("git/")
         {
             println!("username=maypop");
@@ -542,7 +571,7 @@ fn configure_repository(
     run_git(repository, &["config", "--local", APP_ID_KEY, app_id])?;
     run_git(
         repository,
-        &["config", "--local", API_URL_KEY, trim_url(api_url)],
+        &["config", "--local", API_URL_KEY, &api_origin(api_url)?],
     )?;
     configure_credential_helper(repository, api_url, remote)?;
     Ok(())
@@ -558,7 +587,7 @@ fn configure_credential_helper(repository: &Path, api_url: &str, remote: &str) -
     run_git(repository, &["config", "--local", "--add", &helper_key, ""])?;
     let helper = format!(
         "!maypop --url={} git-credential",
-        shell_quote(trim_url(api_url))
+        shell_quote(&api_origin(api_url)?)
     );
     run_git(
         repository,
@@ -571,6 +600,25 @@ fn configure_credential_helper(repository: &Path, api_url: &str, remote: &str) -
     Ok(())
 }
 
+/// `git push <remote> HEAD:refs/heads/main` with no extra flags.
+fn git_head_push_args(remote: &str) -> Vec<String> {
+    vec![
+        "push".to_string(),
+        remote.to_string(),
+        "HEAD:refs/heads/main".to_string(),
+    ]
+}
+
+fn push_head_to_app(repository: &Path, remote: &str, api_url: &str, token: &str) -> Result<()> {
+    let args = git_head_push_args(remote);
+    run_git_with_auth(
+        repository,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        api_url,
+        token,
+    )
+}
+
 /// The name of the remote that points at this app, whatever it is called.
 fn find_app_remote(
     repository: &Path,
@@ -579,66 +627,84 @@ fn find_app_remote(
     legacy_remote: &str,
     app_id: &str,
 ) -> Result<String> {
-    let remotes = successful_git(repository, &["remote"])?;
-    for remote in remotes
+    let remotes: Vec<String> = successful_git(repository, &["remote"])?
         .lines()
         .map(str::trim)
         .filter(|name| !name.is_empty())
-    {
-        repair_legacy_remote(repository, remote, api_url, legacy_remote, expected_remote)?;
-        let fetch = successful_git(repository, &["remote", "get-url", remote])?;
-        let push_urls = remote_push_urls(repository, remote)?;
-        if remote_is_configured_for_app(&fetch, &push_urls, api_url, expected_remote, app_id) {
-            return Ok(remote.to_string());
+        .map(str::to_string)
+        .collect();
+    for remote in &remotes {
+        repair_legacy_remote(
+            repository,
+            remote,
+            api_url,
+            legacy_remote,
+            expected_remote,
+            app_id,
+        )?;
+    }
+    let app_remote = app_repo_remote(api_url, app_id)?;
+    for remote in &remotes {
+        let fetch_urls = configured_remote_urls(repository, remote)?;
+        let push_urls = configured_push_urls(repository, remote, &fetch_urls)?;
+        if !remote_is_configured_for_app(&fetch_urls, &push_urls, api_url, app_id) {
+            continue;
+        }
+        let pushed = git_push_urls(repository, remote)?;
+        if pushed.len() == 1 && urls_equal(&pushed[0], &app_remote) {
+            return Ok(remote.clone());
         }
     }
-    bail!("no Git remote points at this Maypop app; add one with `git remote add {MAYPOP_REMOTE} {expected_remote}`");
+    bail!("no Git remote points at this Maypop app; add one with `git remote add {MAYPOP_REMOTE} {app_remote}`");
 }
 
-fn remote_push_urls(repository: &Path, remote: &str) -> Result<Vec<String>> {
-    Ok(successful_git(
-        repository,
-        &["remote", "get-url", "--all", "--push", remote],
-    )?
-    .lines()
-    .map(str::trim)
-    .filter(|line| !line.is_empty())
-    .map(str::to_string)
-    .collect())
+fn configured_remote_urls(repository: &Path, remote: &str) -> Result<Vec<String>> {
+    let urls = git_config_values(repository, &format!("remote.{remote}.url"))?;
+    if urls.is_empty() {
+        bail!("remote {remote} has no URL");
+    }
+    Ok(urls)
+}
+
+fn configured_push_urls(
+    repository: &Path,
+    remote: &str,
+    fetch_urls: &[String],
+) -> Result<Vec<String>> {
+    let pushurls = git_config_values(repository, &format!("remote.{remote}.pushurl"))?;
+    if pushurls.is_empty() {
+        Ok(fetch_urls.to_vec())
+    } else {
+        Ok(pushurls)
+    }
 }
 
 fn remote_is_configured_for_app(
-    fetch_url: &str,
+    fetch_urls: &[String],
     push_urls: &[String],
     api_url: &str,
-    expected_remote: &str,
     app_id: &str,
 ) -> bool {
-    let Some(fetch) = canonical_git_url(fetch_url) else {
+    let Ok(app_remote) = app_repo_remote(api_url, app_id) else {
         return false;
     };
-    let Some(expected) = canonical_git_url(expected_remote) else {
+    let Some(app_remote) = canonical_git_url(&app_remote) else {
         return false;
     };
-    let Some(app_remote) = canonical_git_url(&format!("{}/git/apps/{}", trim_url(api_url), app_id))
-    else {
-        return false;
-    };
-    let accepted_push = if fetch == expected {
-        expected
-    } else if fetch == app_remote {
-        app_remote
-    } else {
-        let expected_path = format!("/git/apps/{app_id}");
-        if git_url_path(fetch_url).as_deref() != Some(expected_path.as_str()) {
-            return false;
-        }
-        app_remote
-    };
-    !push_urls.is_empty()
+    let expected_path = format!("/git/apps/{app_id}");
+    let fetches_ok = !fetch_urls.is_empty()
+        && fetch_urls.iter().all(|fetch_url| {
+            let Some(fetch) = canonical_git_url(fetch_url) else {
+                return false;
+            };
+            fetch == app_remote
+                || git_url_path(fetch_url).as_deref() == Some(expected_path.as_str())
+        });
+    fetches_ok
+        && !push_urls.is_empty()
         && push_urls
             .iter()
-            .all(|push| canonical_git_url(push).as_deref() == Some(accepted_push.as_str()))
+            .all(|push| canonical_git_url(push).as_deref() == Some(app_remote.as_str()))
 }
 
 fn canonical_git_url(url: &str) -> Option<String> {
@@ -664,30 +730,84 @@ fn urls_equal(left: &str, right: &str) -> bool {
     canonical_git_url(left).is_some() && canonical_git_url(left) == canonical_git_url(right)
 }
 
+fn app_repo_remote(api_url: &str, app_id: &str) -> Result<String> {
+    Ok(format!("{}/git/apps/{app_id}", api_origin(api_url)?))
+}
+
 fn repair_legacy_remote(
     repository: &Path,
     remote: &str,
     api_url: &str,
     legacy_remote: &str,
     expected_remote: &str,
+    app_id: &str,
 ) -> Result<bool> {
-    let fetch = successful_git(repository, &["remote", "get-url", remote])?;
-    if !urls_equal(&fetch, legacy_remote) || urls_equal(legacy_remote, expected_remote) {
+    let app_remote = app_repo_remote(api_url, app_id)?;
+    let fetch_urls = configured_remote_urls(repository, remote)?;
+    if fetch_urls.len() != 1 {
         return Ok(false);
     }
-    let push_urls = remote_push_urls(repository, remote)?;
-    if push_urls.is_empty() || !push_urls.iter().all(|push| urls_equal(push, legacy_remote)) {
+    let fetch = fetch_urls[0].clone();
+    let retired = urls_equal(&fetch, legacy_remote) || urls_equal(&fetch, expected_remote);
+    if !retired || urls_equal(&fetch, &app_remote) {
         return Ok(false);
     }
-    run_git(
-        repository,
-        &["config", "--unset-all", &format!("remote.{remote}.pushurl")],
-    )
-    .ok();
-    run_git(repository, &["remote", "set-url", remote, expected_remote])?;
-    configure_credential_helper(repository, api_url, expected_remote)?;
-    println!("Updated the Maypop Git remote to {expected_remote}.");
+    let pushurl_key = format!("remote.{remote}.pushurl");
+    let previous_pushurls = git_config_values(repository, &pushurl_key)?;
+    let push_urls = if previous_pushurls.is_empty() {
+        vec![fetch.clone()]
+    } else {
+        previous_pushurls.clone()
+    };
+    if push_urls.is_empty() || !push_urls.iter().all(|push| urls_equal(push, &fetch)) {
+        return Ok(false);
+    }
+    let restore = || -> Result<()> {
+        run_git(repository, &["remote", "set-url", remote, &fetch])?;
+        unset_git_config_all(repository, &pushurl_key)?;
+        for push in &previous_pushurls {
+            run_git(
+                repository,
+                &["remote", "set-url", "--add", "--push", remote, push],
+            )?;
+        }
+        Ok(())
+    };
+    configure_credential_helper(repository, api_url, &app_remote)?;
+    if let Err(error) = run_git(repository, &["remote", "set-url", remote, &app_remote]) {
+        restore()?;
+        return Err(error);
+    }
+    if let Err(error) = unset_git_config_all(repository, &pushurl_key) {
+        restore()?;
+        return Err(error);
+    }
+    let pushed = git_push_urls(repository, remote)?;
+    if pushed.len() != 1 || !urls_equal(&pushed[0], &app_remote) {
+        restore()?;
+        bail!("could not move remote {remote} onto the Maypop app repository");
+    }
+    if let (Ok(old_scope), Ok(new_scope)) =
+        (credential_scope(&fetch), credential_scope(&app_remote))
+    {
+        if old_scope != new_scope {
+            unset_git_config_all(repository, &format!("credential.{old_scope}.helper"))?;
+        }
+    }
+    println!("Moved the Git remote to {app_remote}.");
     Ok(true)
+}
+
+fn git_push_urls(repository: &Path, remote: &str) -> Result<Vec<String>> {
+    Ok(successful_git(
+        repository,
+        &["remote", "get-url", "--all", "--push", remote],
+    )?
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .map(str::to_string)
+    .collect())
 }
 
 fn git_remote_url(git_server_url: &str, git_user_id: &str, app_id: &str) -> Result<Url> {
@@ -723,11 +843,29 @@ fn required_git_config(repository: &Path, key: &str) -> Result<String> {
 }
 
 fn git_config(repository: &Path, key: &str) -> Result<Option<String>> {
-    let output = git_output(repository, &["config", "--local", "--get", key])?;
-    if !output.status.success() {
-        return Ok(None);
+    Ok(git_config_values(repository, key)?.into_iter().next())
+}
+
+fn git_config_values(repository: &Path, key: &str) -> Result<Vec<String>> {
+    let output = git_output(repository, &["config", "--local", "--get-all", key])?;
+    match output.status.code() {
+        Some(0) => Ok(String::from_utf8(output.stdout)?
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()),
+        Some(1) | Some(5) => Ok(Vec::new()),
+        _ => bail!("git config --get-all {key} failed: {}", stderr(&output)),
     }
-    Ok(Some(String::from_utf8(output.stdout)?.trim().to_string()))
+}
+
+fn unset_git_config_all(repository: &Path, key: &str) -> Result<()> {
+    let output = git_output(repository, &["config", "--local", "--unset-all", key])?;
+    match output.status.code() {
+        Some(0) | Some(5) => Ok(()),
+        _ => bail!("git config --unset-all {key} failed: {}", stderr(&output)),
+    }
 }
 
 fn run_git(repository: &Path, args: &[&str]) -> Result<()> {
@@ -739,11 +877,15 @@ fn run_git(repository: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn run_git_with_auth(repository: &Path, args: &[&str], api_url: &str, token: &str) -> Result<()> {
+    #[cfg(test)]
+    LAST_GIT_ARGS.with(|cell| {
+        *cell.borrow_mut() = args.iter().map(|arg| (*arg).to_string()).collect();
+    });
     let output = Command::new("git")
         .arg("-C")
         .arg(repository)
         .args(args)
-        .env("MAYPOP_URL", trim_url(api_url))
+        .env("MAYPOP_URL", api_origin(api_url)?)
         .env("MAYPOP_TOKEN", token)
         .output()
         .with_context(|| format!("could not run git {}", args.join(" ")))?;
@@ -762,10 +904,16 @@ fn successful_git(repository: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn git_output(repository: &Path, args: &[&str]) -> Result<Output> {
-    Command::new("git")
-        .arg("-C")
-        .arg(repository)
-        .args(args)
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repository).args(args);
+    #[cfg(test)]
+    TEST_GIT_CONFIG_GLOBAL.with(|path| {
+        if let Some(config) = path.borrow().as_ref() {
+            command.env("GIT_CONFIG_GLOBAL", config);
+            command.env("GIT_CONFIG_NOSYSTEM", "1");
+        }
+    });
+    command
         .output()
         .with_context(|| format!("could not run git {}", args.join(" ")))
 }
@@ -1043,6 +1191,7 @@ mod tests {
         run_git(&directory, &["init", "-b", "main"]).unwrap();
         let legacy = "http://localhost:3000/git/user_1/app_1";
         let expected = "http://localhost:3005/git/user_1/app_1";
+        let app_remote = "http://localhost:3000/git/apps/app_1";
         configure_repository(&directory, "http://localhost:3000", "app_1", legacy).unwrap();
 
         find_app_remote(
@@ -1055,11 +1204,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             successful_git(&directory, &["remote", "get-url", MAYPOP_REMOTE]).unwrap(),
-            expected
+            app_remote
         );
         assert_eq!(
             successful_git(&directory, &["remote", "get-url", "--push", MAYPOP_REMOTE]).unwrap(),
-            expected
+            app_remote
         );
         let helpers = successful_git(
             &directory,
@@ -1067,7 +1216,7 @@ mod tests {
                 "config",
                 "--local",
                 "--get-all",
-                "credential.http://localhost:3005.helper",
+                "credential.http://localhost:3000.helper",
             ],
         )
         .unwrap();
@@ -1081,20 +1230,36 @@ mod tests {
     #[test]
     fn public_fetch_does_not_accept_a_push_url_that_fails_to_canonicalize() {
         assert!(!remote_is_configured_for_app(
-            "http://127.0.0.1:18080/git/apps/app_1",
+            &["http://127.0.0.1:18080/git/apps/app_1".into()],
             &[
                 "https://evil.example/git/apps/app_1?x=1".into(),
                 "http://user@evil.example/git/apps/app_1".into(),
             ],
-            "http://user@localhost:3000",
-            "http://localhost:3005/git/user_1/app_1",
+            "http://localhost:3000",
             "app_1",
         ));
         assert!(!remote_is_configured_for_app(
-            "http://127.0.0.1:18080/git/apps/app_1",
+            &["http://127.0.0.1:18080/git/apps/app_1".into()],
             &["http://localhost:3000/git/apps/app_1".into()],
             "http://user@localhost:3000",
-            "http://localhost:3005/git/user_1/app_1",
+            "app_1",
+        ));
+        assert!(!remote_is_configured_for_app(
+            &["http://localhost:3005/git/user_1/app_1".into()],
+            &["http://localhost:3005/git/user_1/app_1".into()],
+            "http://localhost:3000",
+            "app_1",
+        ));
+        assert!(!remote_is_configured_for_app(
+            &[
+                "http://localhost:3000/git/apps/app_1".into(),
+                "https://github.com/someone/game.git".into(),
+            ],
+            &[
+                "http://localhost:3000/git/apps/app_1".into(),
+                "https://github.com/someone/game.git".into(),
+            ],
+            "http://localhost:3000",
             "app_1",
         ));
     }
@@ -1175,21 +1340,367 @@ mod tests {
     }
 
     #[test]
-    fn publish_accepts_the_git_server_per_user_origin_without_rewriting_it() {
+    fn publish_moves_the_git_server_per_user_remote_to_the_app_repo() {
+        let directory = temp_git_repo();
+        let api = "http://localhost:3000";
+        let app_id = "app_1";
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        let app_remote = format!("{api}/git/apps/{app_id}");
+        configure_repository(&directory, api, app_id, expected).unwrap();
+
+        find_app_remote(&directory, api, expected, legacy, app_id).unwrap();
+        assert_eq!(origin_urls(&directory), (app_remote.clone(), app_remote));
+        let helpers = successful_git(
+            &directory,
+            &[
+                "config",
+                "--local",
+                "--get-all",
+                "credential.http://localhost:3000.helper",
+            ],
+        )
+        .unwrap();
+        assert!(helpers
+            .lines()
+            .any(|line| line == "!maypop --url='http://localhost:3000' git-credential"));
+        assert!(
+            git_config(&directory, "credential.http://localhost:3005.helper")
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn publish_moves_an_explicit_per_user_pushurl() {
+        let directory = temp_git_repo();
+        let api = "http://localhost:3000";
+        let app_id = "app_1";
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        let app_remote = format!("{api}/git/apps/{app_id}");
+        configure_repository(&directory, api, app_id, expected).unwrap();
+        run_git(
+            &directory,
+            &["remote", "set-url", "--push", MAYPOP_REMOTE, expected],
+        )
+        .unwrap();
+        assert_eq!(
+            git_config_values(&directory, &format!("remote.{MAYPOP_REMOTE}.pushurl")).unwrap(),
+            vec![expected.to_string()]
+        );
+
+        find_app_remote(&directory, api, expected, legacy, app_id).unwrap();
+        assert_eq!(origin_urls(&directory), (app_remote.clone(), app_remote));
+        assert!(
+            git_config_values(&directory, &format!("remote.{MAYPOP_REMOTE}.pushurl"))
+                .unwrap()
+                .is_empty()
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn publish_repairs_every_retired_remote_before_choosing() {
+        let directory = temp_git_repo();
+        let api = "http://localhost:3000";
+        let app_id = "app_1";
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        let app_remote = format!("{api}/git/apps/{app_id}");
+        configure_repository(&directory, api, app_id, &app_remote).unwrap();
+        run_git(&directory, &["remote", "add", "later", expected]).unwrap();
+
+        let chosen = find_app_remote(&directory, api, expected, legacy, app_id).unwrap();
+        assert!(chosen == MAYPOP_REMOTE || chosen == "later");
+        assert_eq!(
+            successful_git(&directory, &["remote", "get-url", "later"]).unwrap(),
+            app_remote
+        );
+        assert_eq!(
+            git_config(&directory, "remote.later.url")
+                .unwrap()
+                .as_deref(),
+            Some(app_remote.as_str())
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn publish_does_not_rewrite_a_foreign_url_that_instead_of_maps_to_per_user() {
+        let directory = temp_git_repo();
+        let api = "http://localhost:3000";
+        let app_id = "app_1";
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        let foreign = "https://example.com/other.git";
+        configure_repository(&directory, api, app_id, foreign).unwrap();
+        run_git(
+            &directory,
+            &[
+                "config",
+                "--local",
+                &format!("url.{expected}.insteadOf"),
+                foreign,
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            successful_git(&directory, &["remote", "get-url", MAYPOP_REMOTE]).unwrap(),
+            expected
+        );
+
+        assert_rejected_origin(&directory, api, expected, legacy, app_id);
+        assert_eq!(
+            git_config(&directory, &format!("remote.{MAYPOP_REMOTE}.url"))
+                .unwrap()
+                .as_deref(),
+            Some(foreign)
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn last_git_args() -> Vec<String> {
+        LAST_GIT_ARGS.with(|cell| cell.borrow().clone())
+    }
+
+    fn commit_file(repository: &Path, name: &str, contents: &str) {
+        std::fs::write(repository.join(name), contents).unwrap();
+        run_git(repository, &["add", name]).unwrap();
+        run_git(
+            repository,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                name,
+            ],
+        )
+        .unwrap();
+    }
+
+    fn temp_bare_repo() -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("maypop-cli-bare-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        run_git(&directory, &["init", "--bare", "-b", "main"]).unwrap();
+        directory
+    }
+
+    fn file_url(path: &Path) -> String {
+        format!("file://{}", path.display())
+    }
+
+    #[test]
+    fn git_push_args_are_only_the_remote_and_main_refspec() {
+        assert_eq!(
+            git_head_push_args("maypop"),
+            ["push", "maypop", "HEAD:refs/heads/main"]
+        );
+        assert_eq!(
+            git_head_push_args("origin"),
+            ["push", "origin", "HEAD:refs/heads/main"]
+        );
+        assert_eq!(
+            app_repo_remote("http://localhost:3000/", "app_1").unwrap(),
+            "http://localhost:3000/git/apps/app_1"
+        );
+    }
+
+    #[test]
+    fn migrate_push_updates_a_bare_app_repo() {
+        let work = temp_git_repo();
+        commit_file(&work, "README", "one");
+        let head = successful_git(&work, &["rev-parse", "HEAD"]).unwrap();
+        let bare = temp_bare_repo();
+        let app_id = "app_1";
+        let api = "http://localhost:3000";
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        configure_repository(&work, api, app_id, expected).unwrap();
+        find_app_remote(&work, api, expected, legacy, app_id).unwrap();
+        assert_eq!(
+            git_config(&work, &format!("remote.{MAYPOP_REMOTE}.url"))
+                .unwrap()
+                .as_deref(),
+            Some("http://localhost:3000/git/apps/app_1")
+        );
+        run_git(
+            &work,
+            &["remote", "set-url", MAYPOP_REMOTE, &file_url(&bare)],
+        )
+        .unwrap();
+
+        push_head_to_app(&work, MAYPOP_REMOTE, api, "token").unwrap();
+        assert_eq!(
+            last_git_args(),
+            ["push", MAYPOP_REMOTE, "HEAD:refs/heads/main"]
+        );
+        assert_eq!(
+            successful_git(&bare, &["rev-parse", "refs/heads/main"]).unwrap(),
+            head
+        );
+        assert!(git_config(&work, "remote.maypop.url")
+            .unwrap()
+            .unwrap()
+            .starts_with("file://"));
+
+        std::fs::remove_dir_all(work).unwrap();
+        std::fs::remove_dir_all(bare).unwrap();
+    }
+
+    #[test]
+    fn rejected_push_leaves_the_app_repo_remote() {
+        let work = temp_git_repo();
+        commit_file(&work, "README", "one");
+        let first = successful_git(&work, &["rev-parse", "HEAD"]).unwrap();
+        let bare = temp_bare_repo();
+        let api = "http://localhost:3000";
+        let app_id = "app_1";
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        let app_remote = app_repo_remote(api, app_id).unwrap();
+        configure_repository(&work, api, app_id, expected).unwrap();
+        find_app_remote(&work, api, expected, legacy, app_id).unwrap();
+        assert_eq!(
+            git_config(&work, &format!("remote.{MAYPOP_REMOTE}.url"))
+                .unwrap()
+                .as_deref(),
+            Some(app_remote.as_str())
+        );
+        run_git(
+            &work,
+            &["remote", "set-url", MAYPOP_REMOTE, &file_url(&bare)],
+        )
+        .unwrap();
+        push_head_to_app(&work, MAYPOP_REMOTE, api, "token").unwrap();
+        run_git(&work, &["checkout", "--orphan", "other"]).unwrap();
+        let _ = git_output(&work, &["rm", "-rf", "."]);
+        commit_file(&work, "README", "two");
+        run_git(&work, &["remote", "set-url", MAYPOP_REMOTE, &app_remote]).unwrap();
+        run_git(
+            &work,
+            &[
+                "remote",
+                "set-url",
+                "--add",
+                "--push",
+                MAYPOP_REMOTE,
+                &file_url(&bare),
+            ],
+        )
+        .unwrap();
+
+        let error = push_head_to_app(&work, MAYPOP_REMOTE, api, "token").unwrap_err();
+        assert!(error.to_string().contains("git push"));
+        assert_eq!(
+            last_git_args(),
+            ["push", MAYPOP_REMOTE, "HEAD:refs/heads/main"]
+        );
+        assert_eq!(
+            git_config(&work, &format!("remote.{MAYPOP_REMOTE}.url"))
+                .unwrap()
+                .as_deref(),
+            Some(app_remote.as_str())
+        );
+        assert_eq!(
+            successful_git(&bare, &["rev-parse", "refs/heads/main"]).unwrap(),
+            first
+        );
+
+        std::fs::remove_dir_all(work).unwrap();
+        std::fs::remove_dir_all(bare).unwrap();
+    }
+
+    #[test]
+    fn extra_fetch_url_is_not_rewritten() {
         let directory = temp_git_repo();
         let api = "http://localhost:3000";
         let app_id = "app_1";
         let expected = "http://localhost:3005/git/user_1/app_1";
         let legacy = "http://localhost:3000/git/user_1/app_1";
         configure_repository(&directory, api, app_id, expected).unwrap();
+        run_git(
+            &directory,
+            &[
+                "remote",
+                "set-url",
+                "--add",
+                MAYPOP_REMOTE,
+                "https://github.com/someone/game.git",
+            ],
+        )
+        .unwrap();
+        let before = git_config_values(&directory, &format!("remote.{MAYPOP_REMOTE}.url")).unwrap();
+        assert_eq!(before.len(), 2);
 
-        find_app_remote(&directory, api, expected, legacy, app_id).unwrap();
+        assert_rejected_origin(&directory, api, expected, legacy, app_id);
         assert_eq!(
-            origin_urls(&directory),
-            (expected.to_string(), expected.to_string())
+            git_config_values(&directory, &format!("remote.{MAYPOP_REMOTE}.url")).unwrap(),
+            before
         );
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn global_pushurl_does_not_select_the_app_remote() {
+        let directory = temp_git_repo();
+        let api = "http://localhost:3000";
+        let app_id = "app_1";
+        let expected = "http://localhost:3005/git/user_1/app_1";
+        let legacy = "http://localhost:3000/git/user_1/app_1";
+        let origin = format!("{api}/git/apps/{app_id}");
+        configure_repository(&directory, api, app_id, &origin).unwrap();
+        let global =
+            std::env::temp_dir().join(format!("maypop-cli-gitconfig-{}", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &global,
+            "[remote \"maypop\"]\n\tpushurl = https://example.com/other.git\n",
+        )
+        .unwrap();
+        TEST_GIT_CONFIG_GLOBAL.with(|cell| *cell.borrow_mut() = Some(global.clone()));
+        let pushed = git_push_urls(&directory, MAYPOP_REMOTE).unwrap();
+        let error = find_app_remote(&directory, api, expected, legacy, app_id).unwrap_err();
+        TEST_GIT_CONFIG_GLOBAL.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(pushed, ["https://example.com/other.git"]);
+        assert!(error
+            .to_string()
+            .contains("no Git remote points at this Maypop app"));
+        assert_eq!(
+            git_config(&directory, &format!("remote.{MAYPOP_REMOTE}.url"))
+                .unwrap()
+                .as_deref(),
+            Some(origin.as_str())
+        );
+        assert!(
+            git_config(&directory, &format!("remote.{MAYPOP_REMOTE}.pushurl"))
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+        let _ = std::fs::remove_file(global);
+    }
+
+    #[test]
+    fn api_origin_rejects_credentials_query_fragment_and_path() {
+        assert!(api_origin("http://user@localhost:3000").is_err());
+        assert!(api_origin("http://localhost:3000/?x=1").is_err());
+        assert!(api_origin("http://localhost:3000/#frag").is_err());
+        assert!(api_origin("http://localhost:3000/v1").is_err());
+        assert_eq!(
+            api_origin("http://localhost:3000/").unwrap(),
+            "http://localhost:3000"
+        );
     }
 
     #[test]
@@ -1225,6 +1736,10 @@ mod tests {
         assert_eq!(
             find_app_remote(&directory, api, expected, legacy, app_id).unwrap(),
             MAYPOP_REMOTE
+        );
+        assert_eq!(
+            successful_git(&directory, &["remote", "get-url", "origin"]).unwrap(),
+            "git@github.com:someone/game.git"
         );
 
         std::fs::remove_dir_all(directory).unwrap();

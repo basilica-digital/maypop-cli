@@ -45,20 +45,26 @@ one-time device secret, receives a 90-day Maypop access token, and saves it in
 an owner-only profiles file. Active CLI credentials appear in account settings,
 where the user can revoke any device immediately.
 
-The default binary has nine product commands:
+The default binary has ten product commands:
 
 - `maypop auth` signs in through the browser.
 - `maypop init` creates an unpublished app, initializes the current directory
   as a Git repository when needed, adds the Maypop Git remote as `maypop`
-  (leaving any `origin` alone), and installs a
-  repository-local credential helper. It reuses initial app metadata from an
+  at `{api}/git/apps/{appId}` (leaving any `origin` alone), and installs a
+  repository-local credential helper. It does not read `GIT_SERVER_BASE_URL`
+  for that remote. It reuses initial app metadata from an
   existing `maypop.toml`, or creates one with the detected framework adapter.
   It also writes a `.maypop/.gitignore` that keeps `.maypop/local/`, where the Maypop
   SDK keeps its files for one machine, out of Git, leaving the repository's own
   `.gitignore` untouched; `.maypop/kv-policy.json` and `.maypop/publish/` stay committed.
-- `maypop publish` requires a clean worktree, builds the app, pushes the current
-  Git `HEAD` to whichever remote points at the app, uploads the adapter's static output directly to object storage,
-  and promotes that artifact as the app's next immutable version.
+- `maypop publish` requires a clean worktree, builds the app, pushes a normal
+  Git pack of the current `HEAD` to whichever remote points at the app,
+  uploads the adapter's static output directly to object storage, and promotes
+  that artifact as the app's next immutable version. A remote still on the
+  older per-user URL is moved to `{api}/git/apps/{appId}` first. The CLI does
+  not push to the older remote.
+- `maypop migrate` moves that remote onto the app repository and pushes the
+  current commit, without publishing a version.
 - `maypop info` shows the app connected to the current repository without
   changing it.
 - `maypop app apply` explicitly applies the fields in `[app]`, uploading a
@@ -72,9 +78,8 @@ The default binary has nine product commands:
 
 The credential helper reads the matching profile and only answers for that
 account's path on the configured Maypop Git host. The token is not embedded in
-the remote URL or `.git/config`. Use `maypop publish` for release pushes; it
-applies the Git pack compatibility settings currently required by the Maypop
-Git server.
+the remote URL or `.git/config`. Use `maypop publish` for release pushes. It
+pushes a normal Git pack to the app repository.
 
 ## Build adapters
 
@@ -247,10 +252,10 @@ the CLI. The SDK's connected mode can use every linked MCP server. Hybrid mode
 can opt into the same real servers with `"mcp"` in `.maypop/dev.json`'s
 `remoteCapabilities`.
 
-The API tells the CLI which Git origin to use. The full local stack advertises
-`http://localhost:3005/git`; deployments normally advertise the API gateway's
-same-origin `/git` route. Set backend `GIT_SERVER_BASE_URL` when exposing a
-different Git origin.
+`maypop init` sets the `maypop` remote to `{api}/git/apps/{appId}`. It does
+not read `GIT_SERVER_BASE_URL`. That setting is only how an older per-user
+remote is recognized so it can be moved. A new local app publishes through
+the API's `/git/apps` proxy.
 
 Use `--no-browser` to print the approval URL without opening it. Set
 `MAYPOP_CONFIG_DIR` to move the profiles file.

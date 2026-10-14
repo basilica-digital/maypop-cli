@@ -7,12 +7,18 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- `maypop migrate` moves a checkout onto the app repository at `/git/apps/{app}` and pushes the current commit, without publishing a version.
+
 ### Changed
 
 - `maypop publish` pushes through whichever remote points at the app, matched
   by URL, so `origin` can stay on GitHub or GitLab. It no longer sets the
   branch's upstream, so publishing leaves the remote a branch tracks alone.
-- `maypop init` adds the Maypop remote as `maypop` and leaves `origin` alone.
+  The push is a normal Git pack. A remote still on the older per-user URL is
+  moved to `/git/apps/{app}` first.
+- `maypop init` adds the Maypop remote as `maypop` at `/git/apps/{app}` and leaves `origin` alone.
 
 ### Fixed
 

@@ -99,6 +99,7 @@ async fn run() -> Result<()> {
         Commands::Publish { changelog } => {
             user_commands::publish(profile.as_deref(), token.as_deref(), changelog.as_deref()).await
         }
+        Commands::Migrate => user_commands::migrate(profile.as_deref(), token.as_deref()).await,
         Commands::Info => user_commands::info(profile.as_deref(), token.as_deref()).await,
         Commands::App {
             command: AppCommands::Apply,
@@ -601,6 +602,7 @@ mod tests {
                 "init",
                 "reference",
                 "publish",
+                "migrate",
                 "info",
                 "app",
                 "status",
@@ -615,6 +617,7 @@ mod tests {
             "init",
             "reference",
             "publish",
+            "migrate",
             "info",
             "app",
             "status",

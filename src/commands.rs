@@ -321,17 +321,17 @@ pub(crate) enum DriveCommands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// File one upload under a Drive name. Prints the change unless `--yes` is passed
+    /// Add one Drive row under a name. Prints the change unless `--yes` is passed
     Put {
         /// Local file to upload
         file: PathBuf,
-        /// Drive name. Defaults to the local file name
+        /// Drive name. Defaults to the local file name. Adds a row; it does not replace one
         name: Option<String>,
         /// Upload and file it. Without this flag, the command only prints the change
         #[arg(long)]
         yes: bool,
     },
-    /// Delete one Drive name. Prints the file unless `--yes` is passed
+    /// Delete every live row with one Drive name. Prints how many unless `--yes` is passed
     Rm {
         /// File name. Every live row with this exact name is removed. Not a prefix
         name: String,

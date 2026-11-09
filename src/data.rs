@@ -16,6 +16,11 @@ const PAGE_MAX: u32 = 100;
 const KEY_MAX: usize = 1024;
 const NAME_MAX: usize = 512;
 const FORBIDDEN: &str = "Only the app's owner or an app admin can inspect or change this app's data, and credentials held by a Studio sandbox are read-only.";
+const APP_UNAVAILABLE: &str = "This app was not found, or this account has no access to it.";
+/// Not a uuid, so it cannot be a real upload cid. A filing PUT of this cid
+/// reaches the write check and then 404s on the lookup when the credential
+/// may write.
+const WRITE_PROBE_CID: &str = "maypop-cli-write-probe";
 
 pub(crate) struct Session {
     app_id: String,
@@ -44,16 +49,17 @@ pub(crate) enum DrivePutOutcome {
     DryRun {
         name: String,
         bytes: u64,
-        new_file: bool,
-        existing: Option<Value>,
+        /// Live rows that already use this exact name. Putting adds another.
+        existing_count: usize,
+        newest: Option<Value>,
     },
     Applied(Value),
 }
 
 #[derive(Debug)]
 pub(crate) enum DriveRemoveOutcome {
-    DryRun(Value),
-    Applied,
+    DryRun(Vec<Value>),
+    Applied { count: usize },
 }
 
 /// Resolve the app and the saved credential. `--app` wins over the checkout.
@@ -112,11 +118,7 @@ pub(crate) async fn kv_ls(
     if !query.is_empty() {
         request = request.query(&query);
     }
-    let page = get_json(
-        request,
-        "This app was not found, or this account has no access to it.",
-    )
-    .await?;
+    let page = get_json(request, APP_UNAVAILABLE).await?;
     print_kv_page(&page, json_output)?;
     Ok(page)
 }
@@ -141,11 +143,14 @@ pub(crate) async fn kv_set(
 ) -> Result<KvSetOutcome> {
     require_key(key)?;
     let new_value = parse_kv_value(raw_value)?;
-    let current = read_kv(session, key).await?;
+    // A missing key and an app this account cannot see are both 404 on the
+    // entry route. The list 404s only for the app, so check that first.
+    ensure_app_visible(session, "kv").await?;
     let outcome = if yes {
         let applied = mutate_kv(session, key, Some(&new_value)).await?;
         KvSetOutcome::Applied(applied)
     } else {
+        let current = read_kv(session, key).await?;
         KvSetOutcome::DryRun {
             new_entry: current.is_none(),
             old_value: current
@@ -164,6 +169,8 @@ pub(crate) async fn kv_rm(
     key: &str,
     yes: bool,
 ) -> Result<KvRemoveOutcome> {
+    require_key(key)?;
+    ensure_app_visible(session, "kv").await?;
     let entry = require_kv(session, key).await?;
     let outcome = if yes {
         mutate_kv(session, key, None).await?;
@@ -187,11 +194,7 @@ pub(crate) async fn drive_ls(
     if !query.is_empty() {
         request = request.query(&query);
     }
-    let page = get_json(
-        request,
-        "This app was not found, or this account has no access to it.",
-    )
-    .await?;
+    let page = get_json(request, APP_UNAVAILABLE).await?;
     print_drive_page(&page, json_output)?;
     Ok(page)
 }
@@ -244,18 +247,24 @@ pub(crate) async fn drive_put(
         bail!("{} is not a file", file.display());
     }
     let name = drive_name(file, name)?;
-    let existing = read_drive(session, &name).await?;
     let outcome = if yes {
+        // List 404 means the app is out of reach. The probe PUT 403s for a
+        // read-only credential before any byte is uploaded. Policy, quota,
+        // and conflict can still reject the real filing after confirm.
+        ensure_app_visible(session, "drive").await?;
+        ensure_drive_writable(session, &name).await?;
         let cid =
             upload_confirmed_file(&session.http, &session.api_url, file, "Drive file").await?;
         let applied = put_drive(session, &name, &cid).await?;
         DrivePutOutcome::Applied(applied)
     } else {
+        let existing = drive_rows_named(session, &name).await?;
+        let existing_count = existing.len();
         DrivePutOutcome::DryRun {
             name: name.clone(),
             bytes: metadata.len(),
-            new_file: existing.is_none(),
-            existing,
+            existing_count,
+            newest: newest_row(&existing).cloned(),
         }
     };
     print_drive_put(file, &outcome, json_output)?;
@@ -269,12 +278,16 @@ pub(crate) async fn drive_rm(
     yes: bool,
 ) -> Result<DriveRemoveOutcome> {
     require_drive_name(name)?;
-    let file = require_drive(session, name).await?;
+    let files = drive_rows_named(session, name).await?;
+    if files.is_empty() {
+        bail!("{}", drive_missing(name));
+    }
+    let count = files.len();
     let outcome = if yes {
         delete_drive(session, name).await?;
-        DriveRemoveOutcome::Applied
+        DriveRemoveOutcome::Applied { count }
     } else {
-        DriveRemoveOutcome::DryRun(file)
+        DriveRemoveOutcome::DryRun(files)
     };
     print_drive_rm(name, &outcome, json_output)?;
     Ok(outcome)
@@ -389,14 +402,21 @@ async fn read_kv(session: &Session, key: &str) -> Result<Option<Value>> {
 
 async fn mutate_kv(session: &Session, key: &str, value: Option<&Value>) -> Result<Value> {
     let url = resource(session, "kv/entry");
-    let request = match value {
-        Some(value) => http::json(
-            session.http.put(&url).query(&[("key", key)]),
-            &json!({ "value": value }),
-        )?,
-        None => http::empty(session.http.delete(&url).query(&[("key", key)])),
+    // A set creates the key, so a 404 is the app or the store, not the key.
+    let (request, not_found) = match value {
+        Some(value) => (
+            http::json(
+                session.http.put(&url).query(&[("key", key)]),
+                &json!({ "value": value }),
+            )?,
+            APP_UNAVAILABLE.to_string(),
+        ),
+        None => (
+            http::empty(session.http.delete(&url).query(&[("key", key)])),
+            kv_missing(key),
+        ),
     };
-    get_json(request, &kv_missing(key)).await
+    get_json(request, &not_found).await
 }
 
 fn kv_missing(key: &str) -> String {
@@ -425,7 +445,9 @@ async fn put_drive(session: &Session, name: &str, cid: &str) -> Result<Value> {
         session.http.put(resource(session, "drive/file")),
         &json!({ "name": name, "cid": cid }),
     )?;
-    get_json(request, &drive_missing(name)).await
+    get_json(request, APP_UNAVAILABLE)
+        .await
+        .with_context(|| format!("uploaded {cid} but could not file it as `{name}`"))
 }
 
 async fn delete_drive(session: &Session, name: &str) -> Result<()> {
@@ -449,6 +471,7 @@ async fn download_drive_bytes(url: &str) -> Result<Vec<u8>> {
         .get(url)
         .send()
         .await
+        .map_err(reqwest::Error::without_url)
         .context("could not download the Drive file")?;
     let status = response.status();
     if !status.is_success() {
@@ -458,8 +481,93 @@ async fn download_drive_bytes(url: &str) -> Result<Vec<u8>> {
     response
         .bytes()
         .await
+        .map_err(reqwest::Error::without_url)
         .context("could not read the Drive file")
         .map(|bytes| bytes.to_vec())
+}
+
+/// `GET /data/kv` or `/data/drive` 404s when the app is out of reach, and
+/// never because one key or file is missing.
+async fn ensure_app_visible(session: &Session, collection: &str) -> Result<()> {
+    let request = session
+        .http
+        .get(resource(session, collection))
+        .query(&[("limit", "1")]);
+    get_json(request, APP_UNAVAILABLE).await?;
+    Ok(())
+}
+
+/// Confirm this credential may write before any upload is confirmed.
+///
+/// The filing route checks the sandbox ban before it looks up `cid`, so a
+/// cid that cannot exist returns 404 when a write would be accepted and 403
+/// when the credential is read-only.
+async fn ensure_drive_writable(session: &Session, name: &str) -> Result<()> {
+    let request = http::json(
+        session.http.put(resource(session, "drive/file")),
+        &json!({ "name": name, "cid": WRITE_PROBE_CID }),
+    )?;
+    let (status, body) = send(request).await?;
+    if status == StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    if status.is_success() {
+        bail!("the write check filed `{WRITE_PROBE_CID}` as `{name}`; that upload was not supposed to exist");
+    }
+    Err(explain(status, &body, APP_UNAVAILABLE))
+}
+
+/// Every live row whose name is exactly `name`, across pages. The list prefix
+/// also matches longer names, and those are not this file.
+async fn drive_rows_named(session: &Session, name: &str) -> Result<Vec<Value>> {
+    let mut cursor = None;
+    let mut seen_cursors = std::collections::HashSet::new();
+    let mut matched = Vec::new();
+    loop {
+        let request = session
+            .http
+            .get(resource(session, "drive"))
+            .query(&page_query(Some(name), Some(PAGE_MAX), cursor.as_deref())?);
+        let page = get_json(request, APP_UNAVAILABLE).await?;
+        let files = array_field(&page, "files", "Drive page")?;
+        if files.is_empty() {
+            break;
+        }
+        let mut passed_name = false;
+        for file in files {
+            if text_field(file, "name")? == name {
+                matched.push(without_url(file));
+            } else {
+                // Names are ordered, so a longer prefix match means this name is done.
+                passed_name = true;
+                break;
+            }
+        }
+        if passed_name {
+            break;
+        }
+        let Some(next) = page.get("nextCursor").and_then(Value::as_str) else {
+            break;
+        };
+        if next.is_empty() || !seen_cursors.insert(next.to_string()) {
+            bail!("Maypop repeated the Drive page cursor");
+        }
+        cursor = Some(next.to_string());
+    }
+    Ok(matched)
+}
+
+fn newest_row(rows: &[Value]) -> Option<&Value> {
+    rows.iter()
+        .max_by_key(|row| row.get("createdAt").and_then(Value::as_str).unwrap_or(""))
+}
+
+fn without_url(value: &Value) -> Value {
+    let mut copy = value.clone();
+    if let Some(object) = copy.as_object_mut() {
+        object.remove("url");
+    }
+    copy
 }
 
 async fn get_optional(request: RequestBuilder) -> Result<Option<Value>> {
@@ -646,17 +754,24 @@ fn print_drive_put(file: &Path, outcome: &DrivePutOutcome, json_output: bool) ->
         DrivePutOutcome::DryRun {
             name,
             bytes,
-            new_file,
-            existing,
+            existing_count,
+            newest,
         } => {
+            let note = if *existing_count == 0 {
+                "New file."
+            } else {
+                "Existing rows with this name stay. This adds another row with the same name, and drive get returns the newest."
+            };
             let machine = json!({
                 "dryRun": true,
                 "action": "put",
                 "name": name,
                 "localFile": file,
                 "bytes": bytes,
-                "newFile": new_file,
-                "existing": existing,
+                "newFile": *existing_count == 0,
+                "existingCount": existing_count,
+                "existing": newest.as_ref().map(without_url),
+                "note": note,
             });
             if json_output {
                 return print_json(&machine);
@@ -665,10 +780,18 @@ fn print_drive_put(file: &Path, outcome: &DrivePutOutcome, json_output: bool) ->
                 "Would file {} as Drive name `{name}` ({bytes} bytes).",
                 file.display()
             );
-            if let Some(existing) = existing {
-                println!("Replaces the current file ({}).", describe_file(existing));
-            } else {
+            if *existing_count == 0 {
                 println!("New file.");
+            } else if *existing_count == 1 {
+                println!(
+                    "1 file named `{name}` already exists ({}). It stays; this adds another row with the same name, and `drive get` returns the newest.",
+                    newest.as_ref().map(describe_file).unwrap_or_else(|| "unknown type".into())
+                );
+            } else {
+                println!(
+                    "{existing_count} files named `{name}` already exist. The newest is {}. They stay; this adds another row with the same name, and `drive get` returns the newest.",
+                    newest.as_ref().map(describe_file).unwrap_or_else(|| "unknown type".into())
+                );
             }
             println!("Run again with --yes to apply this change.");
         }
@@ -677,7 +800,7 @@ fn print_drive_put(file: &Path, outcome: &DrivePutOutcome, json_output: bool) ->
                 print_json(file)?;
             } else {
                 println!(
-                    "Filed Drive name `{}` ({}).",
+                    "Added a Drive row named `{}` ({}).",
                     text_field(file, "name")?,
                     describe_file(file)
                 );
@@ -689,31 +812,40 @@ fn print_drive_put(file: &Path, outcome: &DrivePutOutcome, json_output: bool) ->
 
 fn print_drive_rm(name: &str, outcome: &DriveRemoveOutcome, json_output: bool) -> Result<()> {
     match outcome {
-        DriveRemoveOutcome::DryRun(file) => {
+        DriveRemoveOutcome::DryRun(files) => {
             let machine = json!({
                 "dryRun": true,
                 "action": "delete",
                 "name": name,
-                "file": file,
+                "count": files.len(),
+                "files": files.iter().map(without_url).collect::<Vec<_>>(),
             });
             if json_output {
                 return print_json(&machine);
             }
-            println!(
-                "Would delete Drive file `{name}` ({}). Every live row with that exact name is removed.",
-                describe_file(file)
-            );
+            println!("Would delete {} named `{name}`.", files_named(files.len()));
+            for file in files {
+                println!("  {}", describe_file(file));
+            }
             println!("Run again with --yes to apply this change.");
         }
-        DriveRemoveOutcome::Applied => {
+        DriveRemoveOutcome::Applied { count } => {
             if json_output {
-                print_json(&json!({ "deleted": true, "name": name }))?;
+                print_json(&json!({ "deleted": true, "name": name, "count": count }))?;
             } else {
-                println!("Deleted Drive file `{name}`.");
+                println!("Deleted {} named `{name}`.", files_named(*count));
             }
         }
     }
     Ok(())
+}
+
+fn files_named(count: usize) -> String {
+    if count == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{count} files")
+    }
 }
 
 fn array_field<'a>(value: &'a Value, key: &str, kind: &str) -> Result<&'a Vec<Value>> {
@@ -894,7 +1026,10 @@ mod tests {
         }
         assert_eq!(
             paths(&hits),
-            vec![format!("GET /apps/{APP}/data/kv/entry?key=theme")]
+            vec![
+                format!("GET /apps/{APP}/data/kv?limit=1"),
+                format!("GET /apps/{APP}/data/kv/entry?key=theme"),
+            ]
         );
 
         hits.lock().unwrap().clear();
@@ -920,7 +1055,10 @@ mod tests {
         ));
         assert_eq!(
             paths(&hits),
-            vec![format!("GET /apps/{APP}/data/kv/entry?key=fresh")]
+            vec![
+                format!("GET /apps/{APP}/data/kv?limit=1"),
+                format!("GET /apps/{APP}/data/kv/entry?key=fresh"),
+            ]
         );
 
         hits.lock().unwrap().clear();
@@ -929,11 +1067,50 @@ mod tests {
             .unwrap();
         assert!(matches!(applied, KvSetOutcome::Applied(_)));
         let recorded = hits.lock().unwrap();
-        assert_eq!(recorded.len(), 2, "yes reads the old value, then writes");
-        assert!(recorded[0].target.contains("key=theme"));
+        assert_eq!(recorded.len(), 2, "yes checks the app, then writes");
+        assert_eq!(recorded[0].target, format!("/apps/{APP}/data/kv?limit=1"));
         assert_eq!(recorded[1].method, "PUT");
         let body: Value = serde_json::from_slice(&recorded[1].body).unwrap();
         assert_eq!(body, json!({ "value": { "color": "blue" } }));
+    }
+
+    /// Guards a dry run treating an app this account cannot see as a new KV entry.
+    #[tokio::test]
+    async fn kv_set_dry_run_on_an_invisible_app_is_not_a_new_entry() {
+        let (api, hits) = serve(|hit| {
+            if hit.method == "GET" && hit.target.contains("/data/kv?") {
+                (404, r#"{"code":"not_found"}"#.into())
+            } else {
+                (500, format!("unexpected {} {}", hit.method, hit.target))
+            }
+        });
+        let session = session(&api);
+        let error = kv_set(&session, false, "theme", "{}", false)
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), APP_UNAVAILABLE);
+        assert!(
+            paths(&hits).iter().all(|hit| hit.starts_with("GET ")),
+            "a dry run must not write: {}",
+            paths(&hits).join(", ")
+        );
+    }
+
+    /// Guards kv set describing a rejected create as a missing key.
+    #[tokio::test]
+    async fn kv_set_put_404_names_the_app_and_not_the_key() {
+        let (api, _) = serve(|hit| match hit.method.as_str() {
+            "GET" => (200, r#"{"entries":[]}"#.into()),
+            "PUT" => (404, r#"{"code":"not_found"}"#.into()),
+            _ => (500, "unexpected".into()),
+        });
+        let session = session(&api);
+        let error = kv_set(&session, false, "theme", "{}", true)
+            .await
+            .unwrap_err();
+        let text = error.to_string();
+        assert_eq!(text, APP_UNAVAILABLE);
+        assert!(!text.contains("KV entry"), "{text}");
     }
 
     /// Guards `--yes` on delete being ignored, and a dry run sending DELETE.
@@ -948,17 +1125,19 @@ mod tests {
 
         let dry = kv_rm(&session, false, "theme", false).await.unwrap();
         assert!(matches!(dry, KvRemoveOutcome::DryRun(_)));
-        assert_eq!(paths(&hits).len(), 1);
-        assert!(paths(&hits)[0].starts_with("GET "));
+        let dry_paths = paths(&hits);
+        assert_eq!(dry_paths.len(), 2);
+        assert!(dry_paths.iter().all(|hit| hit.starts_with("GET ")));
 
         hits.lock().unwrap().clear();
         let applied = kv_rm(&session, false, "theme", true).await.unwrap();
         assert!(matches!(applied, KvRemoveOutcome::Applied));
         let recorded = paths(&hits);
-        assert_eq!(recorded.len(), 2);
-        assert!(recorded[0].starts_with("GET "));
-        assert!(recorded[1].starts_with("DELETE "));
+        assert_eq!(recorded.len(), 3);
+        assert!(recorded[0].contains("/data/kv?limit=1"));
         assert!(recorded[1].contains("key=theme"));
+        assert!(recorded[2].starts_with("DELETE "));
+        assert!(recorded[2].contains("key=theme"));
     }
 
     /// Guards the next page being fetched without the cursor from the previous page.
@@ -1016,17 +1195,20 @@ mod tests {
             DrivePutOutcome::DryRun {
                 name,
                 bytes: 5,
-                new_file: false,
-                existing: Some(existing),
+                existing_count: 1,
+                newest: Some(newest),
             } => {
                 assert_eq!(name, "notes/hello.txt");
-                assert_eq!(existing["size"], 4);
+                assert_eq!(newest["size"], 4);
+                assert!(newest.get("url").is_none(), "{newest}");
             }
             other => panic!("dry run filed the upload: {other:?}"),
         }
         assert_eq!(paths(&hits).len(), 1);
         assert!(paths(&hits)[0].starts_with("GET "));
+        assert!(paths(&hits)[0].contains("prefix="));
         assert!(!paths(&hits)[0].contains("/uploads"));
+        assert!(!paths(&hits)[0].contains("/drive/file"));
 
         hits.lock().unwrap().clear();
         let applied = drive_put(&session, false, &file, Some("notes/hello.txt"), true)
@@ -1050,12 +1232,169 @@ mod tests {
             targets.contains(&"/uploads/cid-1/confirm"),
             "yes confirms the cid before filing: {targets:?}"
         );
+        let presign_at = recorded
+            .iter()
+            .position(|hit| hit.target.starts_with("/uploads/presign"))
+            .expect("yes confirms an upload");
+        let probe_at = recorded
+            .iter()
+            .position(|hit| {
+                hit.method == "PUT"
+                    && hit
+                        .body
+                        .windows(WRITE_PROBE_CID.len())
+                        .any(|window| window == WRITE_PROBE_CID.as_bytes())
+            })
+            .expect("yes checks the credential before uploading");
+        assert!(
+            probe_at < presign_at,
+            "the write check runs before the upload"
+        );
         let filed = recorded
             .iter()
+            .rev()
             .find(|hit| hit.method == "PUT")
             .expect("yes files the drive name");
         let body: Value = serde_json::from_slice(&filed.body).unwrap();
         assert_eq!(body, json!({ "name": "notes/hello.txt", "cid": "cid-1" }));
+    }
+
+    /// Guards drive put uploading when the app is invisible or the credential is read-only.
+    #[tokio::test]
+    async fn drive_put_does_not_upload_when_the_write_will_fail() {
+        let file = std::env::temp_dir().join(format!("maypop-drive-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&file, b"hello").unwrap();
+
+        let (api, hits) = serve(|hit| {
+            if hit.method == "GET" {
+                (404, r#"{"code":"not_found"}"#.into())
+            } else {
+                (500, format!("unexpected {} {}", hit.method, hit.target))
+            }
+        });
+        let invisible = drive_put(&session(&api), false, &file, Some("notes/hello.txt"), true)
+            .await
+            .unwrap_err();
+        assert_eq!(invisible.to_string(), APP_UNAVAILABLE);
+        assert!(
+            paths(&hits).iter().all(|hit| !hit.starts_with("POST ")),
+            "an invisible app must not be uploaded: {}",
+            paths(&hits).join(", ")
+        );
+
+        let (api, hits) = serve(|hit| match hit.method.as_str() {
+            "GET" => (200, r#"{"files":[]}"#.into()),
+            "PUT" => (403, r#"{"code":"forbidden"}"#.into()),
+            _ => (500, format!("unexpected {} {}", hit.method, hit.target)),
+        });
+        let readonly = drive_put(&session(&api), false, &file, Some("notes/hello.txt"), true)
+            .await
+            .unwrap_err();
+        assert_eq!(readonly.to_string(), FORBIDDEN);
+        assert!(
+            paths(&hits).iter().all(|hit| !hit.starts_with("POST ")),
+            "a read-only credential must not confirm an upload: {}",
+            paths(&hits).join(", ")
+        );
+        let _ = std::fs::remove_file(&file);
+    }
+
+    /// Guards a rejected filing dropping the confirmed upload's cid.
+    #[tokio::test]
+    async fn drive_put_names_the_cid_when_filing_fails() {
+        let (api, hits) = serve_drive_filing_rejected();
+        let session = session(&api);
+        let file = std::env::temp_dir().join(format!("maypop-drive-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&file, b"hello").unwrap();
+        let error = drive_put(&session, false, &file, Some("notes/hello.txt"), true)
+            .await
+            .unwrap_err();
+        let _ = std::fs::remove_file(&file);
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("uploaded cid-1 but could not file it"),
+            "{text}"
+        );
+        assert!(text.contains(FORBIDDEN), "{text}");
+        assert!(paths(&hits)
+            .iter()
+            .any(|hit| hit.starts_with("POST /uploads/presign")));
+    }
+
+    /// Guards drive rm previewing only the newest row when several live rows share the name.
+    #[tokio::test]
+    async fn drive_rm_dry_run_counts_every_row_with_the_name() {
+        let (api, hits) = serve(|hit| {
+            if hit.method == "DELETE" {
+                return (204, String::new());
+            }
+            if hit.target.contains("cursor=page-2") {
+                return (
+                    200,
+                    r#"{"files":[
+                        {"name":"notes/hello.txt","size":9,"mimeType":"text/plain","authorPseudonymousMemberId":"00000000-0000-0000-0000-000000000002","createdAt":"2026-01-03T00:00:00Z","url":"http://127.0.0.1:9/signed?X-Goog-Signature=secret"},
+                        {"name":"notes/hello.txt.bak","size":1,"mimeType":"text/plain","authorPseudonymousMemberId":"00000000-0000-0000-0000-000000000002","createdAt":"2026-01-04T00:00:00Z"}
+                    ]}"#.into(),
+                );
+            }
+            (
+                200,
+                r#"{"files":[
+                    {"name":"notes/hello.txt","size":4,"mimeType":"text/plain","authorPseudonymousMemberId":"00000000-0000-0000-0000-000000000002","createdAt":"2026-01-01T00:00:00Z","url":"http://127.0.0.1:9/signed?X-Goog-Signature=secret"}
+                ],"nextCursor":"page-2"}"#.into(),
+            )
+        });
+        let session = session(&api);
+        let dry = drive_rm(&session, false, "notes/hello.txt", false)
+            .await
+            .unwrap();
+        match dry {
+            DriveRemoveOutcome::DryRun(files) => {
+                assert_eq!(files.len(), 2);
+                assert!(files.iter().all(|file| file.get("url").is_none()));
+                assert!(files.iter().all(|file| file["name"] == "notes/hello.txt"));
+            }
+            other => panic!("dry run deleted the files: {other:?}"),
+        }
+        let recorded = paths(&hits);
+        assert_eq!(
+            recorded.len(),
+            2,
+            "the preview reads every page and does not delete"
+        );
+        assert!(recorded.iter().all(|hit| hit.starts_with("GET ")));
+        assert!(recorded[1].contains("cursor=page-2"));
+
+        hits.lock().unwrap().clear();
+        let applied = drive_rm(&session, false, "notes/hello.txt", true)
+            .await
+            .unwrap();
+        assert!(matches!(applied, DriveRemoveOutcome::Applied { count: 2 }));
+        assert!(paths(&hits).last().unwrap().starts_with("DELETE "));
+    }
+
+    /// Guards a failed download printing the signed URL, signature included.
+    #[tokio::test]
+    async fn download_error_omits_the_signed_url() {
+        let url = "http://127.0.0.1:9/object?X-Goog-Signature=secret-signature";
+        let error = download_drive_bytes(url).await.unwrap_err();
+        let text = format!("{error:#}");
+        assert!(!text.contains("secret-signature"), "{text}");
+        assert!(!text.contains("X-Goog-Signature"), "{text}");
+    }
+
+    /// Guards a dry-run preview carrying the signed download URL.
+    #[test]
+    fn dry_run_preview_drops_the_signed_url() {
+        let file = json!({
+            "name": "a",
+            "url": "http://signed.example/x?X-Goog-Signature=secret",
+            "size": 1
+        });
+        let clean = without_url(&file);
+        assert!(clean.get("url").is_none());
+        assert_eq!(clean["name"], "a");
+        assert_eq!(clean["size"], 1);
     }
 
     fn serve_drive() -> (String, Arc<Mutex<Vec<Hit>>>) {
@@ -1076,11 +1415,35 @@ mod tests {
     }
 
     fn drive_reply(api: &str, hit: &Hit) -> (u16, String) {
+        drive_reply_filing(api, hit, false)
+    }
+
+    fn serve_drive_filing_rejected() -> (String, Arc<Mutex<Vec<Hit>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&hits);
+        let presign = url.clone();
+        std::thread::spawn(move || {
+            while let Ok((stream, _)) = listener.accept() {
+                let hit = read_hit(stream.try_clone().unwrap());
+                let (status, body) = drive_reply_filing(&presign, &hit, true);
+                recorded.lock().unwrap().push(hit);
+                write_response(stream, status, &body);
+            }
+        });
+        (url, hits)
+    }
+
+    fn drive_reply_filing(api: &str, hit: &Hit, reject_filing: bool) -> (u16, String) {
         let path = hit.target.split('?').next().unwrap_or(hit.target.as_str());
-        if hit.method == "GET" && path.ends_with("/data/drive/file") {
+        if hit.method == "GET"
+            && path.ends_with("/data/drive")
+            && !path.ends_with("/data/drive/file")
+        {
             return (
                 200,
-                r#"{"name":"notes/hello.txt","cid":"old","url":"http://127.0.0.1:9/do-not-fetch","size":4,"mimeType":"text/plain","authorPseudonymousMemberId":"00000000-0000-0000-0000-000000000002","createdAt":"2026-01-01T00:00:00Z"}"#.into(),
+                r#"{"files":[{"name":"notes/hello.txt","size":4,"mimeType":"text/plain","authorPseudonymousMemberId":"00000000-0000-0000-0000-000000000002","createdAt":"2026-01-01T00:00:00Z","url":"http://127.0.0.1:9/do-not-fetch?X-Goog-Signature=secret"}]}"#.into(),
             );
         }
         if hit.method == "POST" && path == "/uploads/presign" {
@@ -1096,13 +1459,17 @@ mod tests {
             return (200, r#"{"cid":"cid-1","status":"confirmed"}"#.into());
         }
         if hit.method == "PUT" && path.ends_with("/data/drive/file") {
+            let body = String::from_utf8_lossy(&hit.body);
+            if body.contains(WRITE_PROBE_CID) {
+                return (404, r#"{"code":"not_found"}"#.into());
+            }
+            if reject_filing {
+                return (403, r#"{"code":"forbidden"}"#.into());
+            }
             return (
                 200,
                 r#"{"name":"notes/hello.txt","size":5,"mimeType":"text/plain","authorPseudonymousMemberId":"00000000-0000-0000-0000-000000000002","createdAt":"2026-01-02T00:00:00Z"}"#.into(),
             );
-        }
-        if hit.method == "DELETE" && path.ends_with("/data/drive/file") {
-            return (204, String::new());
         }
         (500, format!("unexpected {} {}", hit.method, hit.target))
     }

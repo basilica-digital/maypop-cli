@@ -9,7 +9,7 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `maypop data` lists, reads, writes, and deletes one app's KV entries and Drive files. Writes and deletes print the change and wait for `--yes`.
+- `maypop data` lists, reads, writes, and deletes one app's KV entries and Drive files. Writes and deletes print the change and wait for `--yes`. `drive put` adds a row with that name, and `drive rm` removes every live row with that exact name. The preview says how many.
 - `maypop migrate` moves a checkout onto the app repository at `/git/apps/{app}` and pushes the current commit, without publishing a version.
 
 ### Changed

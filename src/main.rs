@@ -3,6 +3,7 @@ mod auth;
 mod bundle_upload;
 mod commands;
 mod credentials;
+mod data;
 mod http;
 mod mcp;
 mod project;
@@ -104,6 +105,54 @@ async fn run() -> Result<()> {
         Commands::App {
             command: AppCommands::Apply,
         } => user_commands::apply(profile.as_deref(), token.as_deref()).await,
+        Commands::Data { app, json, command } => {
+            let selected_profile =
+                endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
+            let session =
+                data::open_session(selected_profile, url.as_deref(), token.as_deref(), app)?;
+            match command {
+                DataCommands::Kv { command } => match command {
+                    KvCommands::Ls {
+                        prefix,
+                        limit,
+                        cursor,
+                    } => data::kv_ls(&session, json, prefix.as_deref(), limit, cursor.as_deref())
+                        .await
+                        .map(|_| ()),
+                    KvCommands::Get { key } => data::kv_get(&session, json, &key).await,
+                    KvCommands::Set { key, value, yes } => {
+                        data::kv_set(&session, json, &key, &value, yes)
+                            .await
+                            .map(|_| ())
+                    }
+                    KvCommands::Rm { key, yes } => {
+                        data::kv_rm(&session, json, &key, yes).await.map(|_| ())
+                    }
+                },
+                DataCommands::Drive { command } => match command {
+                    DriveCommands::Ls {
+                        prefix,
+                        limit,
+                        cursor,
+                    } => {
+                        data::drive_ls(&session, json, prefix.as_deref(), limit, cursor.as_deref())
+                            .await
+                            .map(|_| ())
+                    }
+                    DriveCommands::Get { name, output } => {
+                        data::drive_get(&session, json, &name, output.as_deref()).await
+                    }
+                    DriveCommands::Put { file, name, yes } => {
+                        data::drive_put(&session, json, &file, name.as_deref(), yes)
+                            .await
+                            .map(|_| ())
+                    }
+                    DriveCommands::Rm { name, yes } => {
+                        data::drive_rm(&session, json, &name, yes).await.map(|_| ())
+                    }
+                },
+            }
+        }
         Commands::Status => {
             let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
             let selected_profile =
@@ -605,6 +654,7 @@ mod tests {
                 "migrate",
                 "info",
                 "app",
+                "data",
                 "status",
                 "ai",
                 "mcp",
@@ -620,6 +670,7 @@ mod tests {
             "migrate",
             "info",
             "app",
+            "data",
             "status",
             "ai",
             "mcp",
@@ -727,6 +778,86 @@ mod tests {
                 && tool == "web_search"
                 && arguments == r#"{"query":"Maypop SDK"}"#
         ));
+    }
+
+    /// Guards `--app`, `--json`, and `--yes` landing on the wrong command, and a prefix delete.
+    #[test]
+    fn data_commands_address_one_app_and_one_key() {
+        let app = "00000000-0000-0000-0000-0000000000aa";
+        let list = Cli::try_parse_from([
+            "maypop", "data", "kv", "ls", "--prefix", "notes/", "--limit", "10", "--cursor",
+            "notes/a", "--json", "--app", app,
+        ])
+        .unwrap();
+        assert!(matches!(
+            list.command,
+            Commands::Data {
+                app: Some(id),
+                json: true,
+                command: DataCommands::Kv {
+                    command: KvCommands::Ls {
+                        prefix: Some(prefix),
+                        limit: Some(10),
+                        cursor: Some(cursor),
+                    }
+                }
+            } if id.to_string() == app && prefix == "notes/" && cursor == "notes/a"
+        ));
+
+        let set = Cli::try_parse_from([
+            "maypop",
+            "data",
+            "--app",
+            app,
+            "kv",
+            "set",
+            "theme",
+            "@theme.json",
+            "--yes",
+        ])
+        .unwrap();
+        assert!(matches!(
+            set.command,
+            Commands::Data {
+                json: false,
+                command: DataCommands::Kv {
+                    command: KvCommands::Set {
+                        key,
+                        value,
+                        yes: true,
+                    }
+                },
+                ..
+            } if key == "theme" && value == "@theme.json"
+        ));
+
+        let put = Cli::try_parse_from([
+            "maypop",
+            "data",
+            "drive",
+            "put",
+            "hero.png",
+            "images/hero.png",
+        ])
+        .unwrap();
+        assert!(matches!(
+            put.command,
+            Commands::Data {
+                command: DataCommands::Drive {
+                    command: DriveCommands::Put {
+                        name: Some(name),
+                        yes: false,
+                        ..
+                    }
+                },
+                ..
+            } if name == "images/hero.png"
+        ));
+
+        assert!(
+            Cli::try_parse_from(["maypop", "data", "kv", "rm", "--prefix", "notes/", "theme"])
+                .is_err()
+        );
     }
 
     #[test]

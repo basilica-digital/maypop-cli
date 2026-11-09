@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Prebuilt Linux ARM64 (GNU) archives and SHA-256 checksums.
+
 ### Changed
 
 - Tagged builds create GitHub pre-release candidates. Installation instructions

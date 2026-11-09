@@ -7,14 +7,17 @@ Rust command-line client for building and publishing Maypop apps with Git.
 Each `v*` GitHub release contains a prebuilt `maypop` executable and SHA-256
 checksum for:
 
-- Linux x86-64.
+- Linux x86-64 and ARM64 (GNU).
 - macOS Apple Silicon and Intel.
 - Windows x86-64.
 
-Install the latest promoted release by downloading the archive for your platform from the
+Install the latest promoted release by downloading your platform's archive from the
 [latest GitHub release](https://github.com/basilica-digital/maypop-cli/releases/latest),
 verify the adjacent `.sha256` file, extract it, and place `maypop` (or
 `maypop.exe`) somewhere on `PATH`.
+
+Linux ARM64 archives are named `maypop-<tag>-aarch64-unknown-linux-gnu.tar.gz`,
+with an adjacent `.sha256` file. Use these on 64-bit ARM Linux systems with glibc.
 
 With Rust, Cargo, and the GitHub CLI (`gh`) installed, you can build that same
 promoted release from source instead:

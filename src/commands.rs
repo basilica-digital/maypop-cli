@@ -70,6 +70,17 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: AppCommands,
     },
+    /// Inspect and change an app's KV entries and Drive files
+    Data {
+        /// App id. Defaults to the app this repository is connected to
+        #[arg(long, global = true)]
+        app: Option<uuid::Uuid>,
+        /// Print machine-readable JSON
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        command: DataCommands,
+    },
     /// Show backend health and the authenticated account
     Status,
     /// Generate media with the authenticated Maypop account
@@ -229,6 +240,105 @@ pub(crate) enum Commands {
 pub(crate) enum AppCommands {
     /// Apply the [app] table from maypop.toml to Maypop
     Apply,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum DataCommands {
+    /// KV entries for this app
+    Kv {
+        #[command(subcommand)]
+        command: KvCommands,
+    },
+    /// Drive files for this app
+    Drive {
+        #[command(subcommand)]
+        command: DriveCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum KvCommands {
+    /// List one page of keys
+    Ls {
+        /// Return only keys that start with this prefix
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Page size, from 1 to 100. The server default is 50
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Cursor printed by the previous page
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Print one KV value
+    Get {
+        /// Entry key
+        #[arg(allow_hyphen_values = true)]
+        key: String,
+    },
+    /// Set one KV value. Prints the change unless `--yes` is passed
+    Set {
+        /// Entry key
+        #[arg(allow_hyphen_values = true)]
+        key: String,
+        /// JSON value, or @file to read JSON from a file
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+        /// Apply the change. Without this flag, the command only prints it
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete one KV key. Prints the entry unless `--yes` is passed
+    Rm {
+        /// Entry key. This deletes that key only, never a prefix
+        #[arg(allow_hyphen_values = true)]
+        key: String,
+        /// Apply the delete. Without this flag, the command only prints it
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum DriveCommands {
+    /// List one page of Drive files
+    Ls {
+        /// Return only names that start with this prefix
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Page size, from 1 to 100. The server default is 50
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Cursor printed by the previous page
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Download one Drive file
+    Get {
+        /// File name
+        name: String,
+        /// Write the bytes here instead of stdout
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// File one upload under a Drive name. Prints the change unless `--yes` is passed
+    Put {
+        /// Local file to upload
+        file: PathBuf,
+        /// Drive name. Defaults to the local file name
+        name: Option<String>,
+        /// Upload and file it. Without this flag, the command only prints the change
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete one Drive name. Prints the file unless `--yes` is passed
+    Rm {
+        /// File name. Every live row with this exact name is removed. Not a prefix
+        name: String,
+        /// Apply the delete. Without this flag, the command only prints it
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]

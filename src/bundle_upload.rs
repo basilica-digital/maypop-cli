@@ -119,12 +119,25 @@ pub(crate) async fn upload_image(client: &Client, api_url: &str, path: &Path) ->
     if mime.type_().as_str() != "image" {
         bail!("thumbnail {} is not a recognized image", path.display());
     }
+    upload_confirmed_file(client, api_url, path, "thumbnail").await
+}
+
+/// Presign, upload, and confirm one file. The returned cid is what Drive files.
+pub(crate) async fn upload_confirmed_file(
+    client: &Client,
+    api_url: &str,
+    path: &Path,
+    label: &str,
+) -> Result<String> {
+    if !path.is_file() {
+        bail!("{label} {} is not a file", path.display());
+    }
     let response = http::empty(client.post(format!("{}/uploads/presign", trim_url(api_url))))
         .send()
         .await
-        .context("could not prepare the thumbnail upload")?;
+        .with_context(|| format!("could not prepare the {label} upload"))?;
     let presigned: PresignedUpload = successful_json(response).await?;
-    upload_to_policy(&presigned.url, &presigned.fields, path, "thumbnail").await?;
+    upload_to_policy(&presigned.url, &presigned.fields, path, label).await?;
     let response = http::empty(client.post(format!(
         "{}/uploads/{}/confirm",
         trim_url(api_url),
@@ -132,7 +145,7 @@ pub(crate) async fn upload_image(client: &Client, api_url: &str, path: &Path) ->
     )))
     .send()
     .await
-    .context("could not confirm the thumbnail upload")?;
+    .with_context(|| format!("could not confirm the {label} upload"))?;
     successful_empty(response).await?;
     Ok(presigned.cid)
 }

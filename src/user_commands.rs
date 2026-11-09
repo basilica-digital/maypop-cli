@@ -500,6 +500,25 @@ async fn current_user(client: &Client, api_url: &str) -> Result<CredentialUser> 
     successful_json(response).await
 }
 
+/// App id and API URL from the checkout `maypop init` configured, when this
+/// directory is one. A normal Git repository that is not a Maypop app yields
+/// `None` so a command can still take `--app`.
+pub(crate) fn connected_checkout() -> Result<Option<(String, String)>> {
+    let cwd = std::env::current_dir().context("could not read the working directory")?;
+    let output = git_output(&cwd, &["rev-parse", "--show-toplevel"])?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let root = String::from_utf8(output.stdout)?.trim().to_string();
+    let repository =
+        std::fs::canonicalize(root).context("could not resolve the Git repository root")?;
+    let Some(app_id) = git_config(&repository, APP_ID_KEY)? else {
+        return Ok(None);
+    };
+    let api_url = required_git_config(&repository, API_URL_KEY)?;
+    Ok(Some((app_id, api_url)))
+}
+
 pub(crate) fn app_connection(
     profile: Option<&str>,
     explicit_token: Option<&str>,

@@ -45,7 +45,7 @@ one-time device secret, receives a 90-day Maypop access token, and saves it in
 an owner-only profiles file. Active CLI credentials appear in account settings,
 where the user can revoke any device immediately.
 
-The default binary has ten product commands:
+The default binary has eleven product commands:
 
 - `maypop auth` signs in through the browser.
 - `maypop init` creates an unpublished app, initializes the current directory
@@ -69,6 +69,9 @@ The default binary has ten product commands:
   changing it.
 - `maypop app apply` explicitly applies the fields in `[app]`, uploading a
   configured thumbnail first when necessary.
+- `maypop data` lists and reads an app's KV entries and Drive files, and
+  changes one key or file at a time. `kv set`, `kv rm`, `drive put`, and
+  `drive rm` print the change and do nothing until `--yes`.
 - `maypop status` reports backend health and the authenticated username/email.
 - `maypop ai` generates image, audio, and video files with the authenticated
   account.
@@ -251,6 +254,39 @@ once connected there, they appear in `maypop mcp list` and can be linked with
 the CLI. The SDK's connected mode can use every linked MCP server. Hybrid mode
 can opt into the same real servers with `"mcp"` in `.maypop/dev.json`'s
 `remoteCapabilities`.
+
+## App data
+
+`maypop data` reads and changes KV entries and Drive files for an app you own
+or administer. Run it in the app's repository, or pass `--app <id>`. `--json`
+prints the response for another program.
+
+```sh
+maypop data kv ls --prefix notes/ --limit 20
+maypop data kv get theme
+maypop data kv set theme '{"color":"green"}'
+maypop data kv set config @config.json --yes
+maypop data kv rm theme --yes
+maypop data drive ls --prefix images/
+maypop data drive get images/hero.png -o hero.png
+maypop data drive put hero.png images/hero.png --yes
+maypop data drive rm images/hero.png --yes
+```
+
+`kv set` takes a JSON value, or `@file` containing JSON. `drive put` uploads
+the local file, confirms it, and files that confirmed upload under the Drive
+name. The name defaults to the file's name.
+
+`kv ls` and `drive ls` print one page. Pass `--cursor` from the previous page
+to continue. A write or delete names one key or one file. There is no prefix
+delete and no bulk delete. Without `--yes`, the command prints the old value
+and the new value, or `new entry`, or the file that would be deleted, and
+leaves the app unchanged.
+
+A 403 means this account is not the app's owner or an app admin, or the
+credential is one a Studio sandbox holds. Sandbox credentials can read and
+cannot write. A 404 means this account cannot see the app, or the key or file
+does not exist.
 
 `maypop init` sets the `maypop` remote to `{api}/git/apps/{appId}`. It does
 not read `GIT_SERVER_BASE_URL`. That setting is only how an older per-user

@@ -25,3 +25,18 @@ jobs:
         run: cargo test --locked
       - name: Test all features
         run: cargo test --locked --all-features
+
+  build-linux-arm64:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux ARM64 cross linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-aarch64-linux-gnu
+      - name: Install Rust target
+        run: rustup target add aarch64-unknown-linux-gnu
+      - name: Build Linux ARM64
+        run: cargo build --locked --target aarch64-unknown-linux-gnu

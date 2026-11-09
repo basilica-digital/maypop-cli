@@ -14,7 +14,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Tagged builds create GitHub pre-release candidates. Installation instructions
-  select the latest promoted release, including when building from source.
+  select the latest promoted release, including when building from source
+  without a GitHub login.
 
 ### Fixed
 

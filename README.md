@@ -19,11 +19,11 @@ verify the adjacent `.sha256` file, extract it, and place `maypop` (or
 Linux ARM64 archives are named `maypop-<tag>-aarch64-unknown-linux-gnu.tar.gz`,
 with an adjacent `.sha256` file. Use these on 64-bit ARM Linux systems with glibc.
 
-With Rust, Cargo, and the GitHub CLI (`gh`) installed, you can build that same
-promoted release from source instead:
+With Rust, Cargo, `curl`, and `jq` installed, you can build that same
+promoted release from source without signing in to GitHub:
 
 ```sh
-release_tag=$(gh release view --repo basilica-digital/maypop-cli --json tagName --jq .tagName) &&
+release_tag=$(curl -fsSL https://api.github.com/repos/basilica-digital/maypop-cli/releases/latest | jq -er '.tag_name') &&
   cargo install --locked --git https://github.com/basilica-digital/maypop-cli --tag "$release_tag"
 ```
 
@@ -344,9 +344,15 @@ matches the package version, runs the tests, builds every release archive and
 checksum, and creates a GitHub pre-release with generated notes, without
 changing the latest release.
 
-Promotion is separate: only after the matching server changes are deployed
-to production does the candidate become a regular release and the latest
-install target. Creating or pushing a tag alone never promotes it.
+The product's production deploy pipeline promotes the pinned candidate after
+the matching server deploy succeeds. Using release-write credentials, it runs:
+
+```sh
+gh release edit "v<version>" --repo basilica-digital/maypop-cli --prerelease=false --latest
+```
+
+This makes the candidate a regular release and the latest install target.
+Creating or pushing a tag alone never promotes it.
 
 ## License
 

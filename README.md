@@ -11,15 +11,17 @@ checksum for:
 - macOS Apple Silicon and Intel.
 - Windows x86-64.
 
-Download the archive for your platform from the
+Install the latest promoted release by downloading the archive for your platform from the
 [latest GitHub release](https://github.com/basilica-digital/maypop-cli/releases/latest),
 verify the adjacent `.sha256` file, extract it, and place `maypop` (or
 `maypop.exe`) somewhere on `PATH`.
 
-To install directly from the source repository instead:
+With Rust, Cargo, and the GitHub CLI (`gh`) installed, you can build that same
+promoted release from source instead:
 
 ```sh
-cargo install --locked --git https://github.com/basilica-digital/maypop-cli
+release_tag=$(gh release view --repo basilica-digital/maypop-cli --json tagName --jq .tagName) &&
+  cargo install --locked --git https://github.com/basilica-digital/maypop-cli --tag "$release_tag"
 ```
 
 Confirm the installed version:
@@ -27,6 +29,9 @@ Confirm the installed version:
 ```sh
 maypop --version
 ```
+
+Tagged candidates remain pre-releases until promoted. They do not change what
+the latest-release link or the source install above selects.
 
 ## Quick start
 
@@ -164,6 +169,10 @@ repository's API URL.
 
 The production API is used when the initial `default` profile is created with
 plain `maypop auth`.
+
+If a command needs routes the selected server does not have yet, the CLI
+reports `This command isn't available on this server yet.` and exits
+unsuccessfully. Missing apps, keys, and files keep their usual errors.
 
 ## AI media generation
 
@@ -317,17 +326,24 @@ cargo install --locked --path . --features admin
 
 ## Release
 
-The package version in `Cargo.toml` is authoritative. To release `0.5.1`:
+The package version in `Cargo.toml` is authoritative. To prepare a release
+candidate (replace `<version>` with that version):
 
-1. Set `version = "0.5.1"` in `Cargo.toml`.
+1. Set `version = "<version>"` in `Cargo.toml`.
 2. Run `cargo check` to update the package entry in `Cargo.lock`.
-3. Move the relevant entries in `CHANGELOG.md` under a dated `0.5.1` heading.
-4. Commit those files with `chore: release v0.5.1`.
-5. Create an annotated `v0.5.1` tag and push both `main` and the tag.
+3. Move the relevant entries in `CHANGELOG.md` under a dated version heading.
+4. Commit those files with `chore: release v<version>`.
+5. When ready to build a candidate, create an annotated `v<version>` tag on
+   that commit and push it.
 
 The tag is the release trigger. GitHub Actions rejects it unless it exactly
 matches the package version, runs the tests, builds every release archive and
-checksum, and creates the GitHub Release with generated notes.
+checksum, and creates a GitHub pre-release with generated notes, without
+changing the latest release.
+
+Promotion is separate: only after the matching server changes are deployed
+to production does the candidate become a regular release and the latest
+install target. Creating or pushing a tag alone never promotes it.
 
 ## License
 

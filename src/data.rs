@@ -587,6 +587,9 @@ async fn send(request: RequestBuilder) -> Result<(StatusCode, String)> {
     let response = request.send().await.context("could not reach Maypop")?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
+    if http::missing_route(status, &body) {
+        return Err(failure(status, &body));
+    }
     Ok((status, body))
 }
 
@@ -991,6 +994,24 @@ mod tests {
         format!(
             r#"{{"key":"theme","value":{{"color":"{color}"}},"size":18,"authorPseudonymousMemberId":"00000000-0000-0000-0000-000000000002","updatedAt":"2026-01-01T00:00:00Z"}}"#
         )
+    }
+
+    #[tokio::test]
+    async fn missing_data_routes_do_not_look_like_missing_apps_or_entries() {
+        let (api, _) = serve(|_| (404, String::new()));
+        let session = session(&api);
+        for error in [
+            kv_ls(&session, false, None, None, None).await.unwrap_err(),
+            read_kv(&session, "theme").await.unwrap_err(),
+            ensure_drive_writable(&session, "hero.png")
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                error.to_string(),
+                "This command isn't available on this server yet."
+            );
+        }
     }
 
     /// Guards a dry run sending the PUT, and `--yes` leaving the stored value unchanged.

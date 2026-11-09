@@ -211,6 +211,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_missing_auth_route_explains_that_the_command_is_unavailable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
+        serve(listener, vec![("404 Not Found", "")]);
+
+        let Err(error) = authenticate(&Client::new(), &api_url, "test", true).await else {
+            panic!("an unavailable auth route must fail");
+        };
+        assert_eq!(
+            error.to_string(),
+            "This command isn't available on this server yet."
+        );
+    }
+
+    #[tokio::test]
     async fn a_plan_refusal_stops_the_poll_with_a_billing_link() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let api_url = format!("http://{}", listener.local_addr().unwrap());

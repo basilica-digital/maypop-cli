@@ -97,4 +97,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --verify-tag \
             --generate-notes \
+            --prerelease \
+            --latest=false \
             --title "Maypop CLI $GITHUB_REF_NAME"

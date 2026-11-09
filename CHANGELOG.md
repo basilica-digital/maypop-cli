@@ -7,6 +7,16 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed
+
+- Tagged builds create GitHub pre-release candidates. Installation instructions
+  select the latest promoted release, including when building from source.
+
+### Fixed
+
+- Commands explain when their routes are not available on the selected server
+  yet, while preserving errors for missing apps, keys, and files.
+
 ## 0.6.0 - 2026-11-09
 
 ### Added

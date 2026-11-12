@@ -48,10 +48,18 @@ struct AppInfo {
     visibility: String,
     link_access: String,
     allow_remixing: bool,
+    #[serde(default, deserialize_with = "deserialize_present_rating")]
+    content_rating: Option<String>,
     tags: Vec<String>,
     thumbnail_cid: Option<String>,
     latest_version: i32,
     stable_version: i32,
+}
+
+fn deserialize_present_rating<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 pub(crate) struct AppConnection {
@@ -124,6 +132,7 @@ fn resolve_initial_app(
         }
     });
     app.allow_remixing.get_or_insert(true);
+    app.content_rating.get_or_insert_default();
     app.tags.get_or_insert_with(Vec::new);
     if app.name.is_none() {
         bail!("could not infer an app name; pass --name or set app.name in maypop.toml");
@@ -212,6 +221,9 @@ pub(crate) async fn publish(
     let app_id = required_git_config(&repository, APP_ID_KEY)?;
     let api_url = required_git_config(&repository, API_URL_KEY)?;
     project::create_config(&repository, None)?;
+    let rating = project::app_config(&repository)?
+        .and_then(|config| config.content_rating)
+        .unwrap_or_default();
     let token = required_token(&api_url, profile, explicit_token)?;
     let http = client(Some(&token))?;
     let user = current_user(&http, &api_url).await?;
@@ -269,6 +281,14 @@ pub(crate) async fn publish(
         build.routing,
     )
     .await?;
+    let response = http_request::json(
+        http.put(format!("{}/cli/apps/{app_id}", trim_url(&api_url))),
+        &json!({"contentRating": rating}),
+    )?
+    .send()
+    .await
+    .context("could not apply the content rating before publishing")?;
+    rating_write_result(response).await?;
     let response = http_request::json(
         http.post(format!("{}/cli/apps/{app_id}/publish", trim_url(&api_url))),
         &json!({
@@ -369,6 +389,7 @@ pub(crate) async fn apply(profile: Option<&str>, explicit_token: Option<&str>) -
     let connection = app_connection(profile, explicit_token)?;
     let config = project::app_config(&connection.repository)?
         .context("maypop.toml has no [app] table; add one or run `maypop init` in a new project")?;
+    let writes_rating = config.content_rating.is_some();
     let mut fields = serde_json::Map::new();
     if let Some(name) = config.name {
         fields.insert("name".into(), name.into());
@@ -384,6 +405,9 @@ pub(crate) async fn apply(profile: Option<&str>, explicit_token: Option<&str>) -
     }
     if let Some(allow_remixing) = config.allow_remixing {
         fields.insert("allowRemixing".into(), allow_remixing.into());
+    }
+    if let Some(rating) = config.content_rating {
+        fields.insert("contentRating".into(), serde_json::to_value(rating)?);
     }
     if let Some(tags) = config.tags {
         fields.insert("tags".into(), serde_json::to_value(tags)?);
@@ -414,7 +438,11 @@ pub(crate) async fn apply(profile: Option<&str>, explicit_token: Option<&str>) -
     .send()
     .await
     .context("could not update the Maypop app")?;
-    let app = successful_json::<AppInfo>(response).await?;
+    let app = if writes_rating {
+        rating_write_result(response).await?
+    } else {
+        successful_json::<AppInfo>(response).await?
+    };
     println!("Applied app metadata from maypop.toml.\n");
     print_app_info(&app, &connection.api_url);
     Ok(())
@@ -548,6 +576,16 @@ pub(crate) async fn successful_json<T: for<'de> Deserialize<'de>>(
     }
     let body = response.text().await.unwrap_or_default();
     Err(http_request::failure(status, &body))
+}
+
+async fn rating_write_result(response: reqwest::Response) -> Result<AppInfo> {
+    let app = successful_json::<AppInfo>(response).await?;
+    match app.content_rating.as_deref() {
+        None => eprintln!("Warning: content rating is not supported by this server yet; apply or publish again once it is supported."),
+        Some("general" | "mature") => {}
+        Some(rating) => bail!("the Maypop server returned an unexpected content rating: {rating:?}"),
+    }
+    Ok(app)
 }
 
 fn prepare_repository(path: &Path) -> Result<PathBuf> {
@@ -1007,6 +1045,10 @@ fn print_app_info(app: &AppInfo, api_url: &str) {
     println!("Visibility: {}", app.visibility);
     println!("Link access: {}", app.link_access);
     println!(
+        "Content rating: {}",
+        app.content_rating.as_deref().unwrap_or("unknown")
+    );
+    println!(
         "Allow remixing: {}",
         if app.allow_remixing { "yes" } else { "no" }
     );
@@ -1046,6 +1088,7 @@ mod tests {
             visibility: Some("unlisted".into()),
             link_access: Some("use".into()),
             allow_remixing: Some(false),
+            content_rating: Some(project::ContentRating::Mature),
             tags: Some(vec!["design".into()]),
             thumbnail: Some("assets/thumbnail.png".into()),
         };
@@ -1070,6 +1113,7 @@ mod tests {
             visibility: Some("unlisted".into()),
             link_access: Some("view".into()),
             allow_remixing: Some(false),
+            content_rating: None,
             tags: Some(vec!["design".into()]),
             thumbnail: None,
         };

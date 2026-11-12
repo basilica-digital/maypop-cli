@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.7.0 - 2026-11-12
+
 ### Added
 
 - Declare `content_rating = "general"` or `"mature"` in `maypop.toml`. App apply and publish send the rating, and `maypop info` shows the rating in force.

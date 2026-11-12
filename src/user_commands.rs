@@ -282,7 +282,7 @@ pub(crate) async fn publish(
     .send()
     .await
     .context("could not apply the content rating before publishing")?;
-    successful_json::<AppInfo>(response).await?;
+    rating_write_result(response).await?;
     let response = http_request::json(
         http.post(format!("{}/cli/apps/{app_id}/publish", trim_url(&api_url))),
         &json!({
@@ -383,6 +383,7 @@ pub(crate) async fn apply(profile: Option<&str>, explicit_token: Option<&str>) -
     let connection = app_connection(profile, explicit_token)?;
     let config = project::app_config(&connection.repository)?
         .context("maypop.toml has no [app] table; add one or run `maypop init` in a new project")?;
+    let writes_rating = config.content_rating.is_some();
     let mut fields = serde_json::Map::new();
     if let Some(name) = config.name {
         fields.insert("name".into(), name.into());
@@ -431,7 +432,11 @@ pub(crate) async fn apply(profile: Option<&str>, explicit_token: Option<&str>) -
     .send()
     .await
     .context("could not update the Maypop app")?;
-    let app = successful_json::<AppInfo>(response).await?;
+    let app = if writes_rating {
+        rating_write_result(response).await?
+    } else {
+        successful_json::<AppInfo>(response).await?
+    };
     println!("Applied app metadata from maypop.toml.\n");
     print_app_info(&app, &connection.api_url);
     Ok(())
@@ -565,6 +570,14 @@ pub(crate) async fn successful_json<T: for<'de> Deserialize<'de>>(
     }
     let body = response.text().await.unwrap_or_default();
     Err(http_request::failure(status, &body))
+}
+
+async fn rating_write_result(response: reqwest::Response) -> Result<AppInfo> {
+    let app = successful_json::<AppInfo>(response).await?;
+    if !matches!(app.content_rating.as_deref(), Some("general" | "mature")) {
+        bail!("the Maypop server did not acknowledge content rating support; upgrade the server before applying or publishing a rating");
+    }
+    Ok(app)
 }
 
 fn prepare_repository(path: &Path) -> Result<PathBuf> {

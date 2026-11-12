@@ -124,13 +124,13 @@ fn respond(stream: &mut std::net::TcpStream, body: &str) {
 }
 
 #[test]
-fn legacy_server_rejects_apply_with_a_rating_but_info_remains_readable() {
+fn legacy_server_warns_for_rating_writes_but_info_remains_readable() {
     for (command, config, rating, success) in [
         (
             vec!["app", "apply"],
             "[app]\ncontent_rating = \"mature\"\n",
             None,
-            false,
+            true,
         ),
         (
             vec!["app", "apply"],
@@ -188,20 +188,27 @@ fn legacy_server_rejects_apply_with_a_rating_but_info_remains_readable() {
         );
         if !success {
             assert!(request.contains("\"contentRating\":\"mature\""));
-            assert!(String::from_utf8_lossy(&output.stderr)
-                .contains("did not acknowledge content rating support"));
+            assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected content rating"));
+        } else if rating.is_none() && request.contains("\"contentRating\"") {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("not supported by this server yet"));
+            assert!(stderr.contains("apply or publish again once it is supported"));
+            assert_eq!(stderr.lines().count(), 1);
+        } else {
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("Warning:"));
         }
     }
 }
 
 #[test]
 #[cfg(unix)]
-fn publish_sends_rating_and_stops_when_the_server_does_not_acknowledge_it() {
+fn publish_warns_for_legacy_servers_and_rejects_unexpected_ratings() {
     use std::os::unix::fs::PermissionsExt;
     for (declaration, expected, effective) in [
         (Some("mature"), "mature", None),
         (None, "general", None),
         (Some("mature"), "mature", Some("general")),
+        (Some("mature"), "mature", Some("unknown")),
     ] {
         let directory =
             std::env::temp_dir().join(format!("maypop-publish-rating-{}", uuid::Uuid::new_v4()));
@@ -262,7 +269,7 @@ fn publish_sends_rating_and_stops_when_the_server_does_not_acknowledge_it() {
         let server = std::thread::spawn(move || {
             let mut requests = Vec::new();
             listener.set_nonblocking(true).unwrap();
-            for index in 0..if effective.is_some() { 5 } else { 4 } {
+            for index in 0..if effective == Some("unknown") { 4 } else { 5 } {
                 let deadline = std::time::Instant::now() + Duration::from_secs(5);
                 let mut stream = loop {
                     match listener.accept() {
@@ -310,7 +317,7 @@ fn publish_sends_rating_and_stops_when_the_server_does_not_acknowledge_it() {
         std::fs::remove_dir_all(directory).unwrap();
         assert_eq!(
             output.status.success(),
-            effective.is_some(),
+            effective != Some("unknown"),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
@@ -326,12 +333,19 @@ fn publish_sends_rating_and_stops_when_the_server_does_not_acknowledge_it() {
             serde_json::from_str::<serde_json::Value>(payload).unwrap(),
             serde_json::json!({"contentRating":expected})
         );
-        if effective.is_none() {
-            assert!(String::from_utf8_lossy(&output.stderr)
-                .contains("did not acknowledge content rating support"));
+        if effective == Some("unknown") {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected content rating"));
             assert_eq!(requests.len(), 4);
         } else {
             assert!(requests[4].starts_with("POST /cli/apps/app-id/publish "));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if effective.is_none() {
+                assert!(stderr.contains("not supported by this server yet"));
+                assert!(stderr.contains("apply or publish again once it is supported"));
+                assert_eq!(stderr.lines().count(), 1);
+            } else {
+                assert!(!stderr.contains("Warning:"));
+            }
         }
     }
 }

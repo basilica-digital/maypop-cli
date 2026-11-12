@@ -48,12 +48,18 @@ struct AppInfo {
     visibility: String,
     link_access: String,
     allow_remixing: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_present_rating")]
     content_rating: Option<String>,
     tags: Vec<String>,
     thumbnail_cid: Option<String>,
     latest_version: i32,
     stable_version: i32,
+}
+
+fn deserialize_present_rating<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 pub(crate) struct AppConnection {
@@ -574,8 +580,10 @@ pub(crate) async fn successful_json<T: for<'de> Deserialize<'de>>(
 
 async fn rating_write_result(response: reqwest::Response) -> Result<AppInfo> {
     let app = successful_json::<AppInfo>(response).await?;
-    if !matches!(app.content_rating.as_deref(), Some("general" | "mature")) {
-        bail!("the Maypop server did not acknowledge content rating support; upgrade the server before applying or publishing a rating");
+    match app.content_rating.as_deref() {
+        None => eprintln!("Warning: content rating is not supported by this server yet; apply or publish again once it is supported."),
+        Some("general" | "mature") => {}
+        Some(rating) => bail!("the Maypop server returned an unexpected content rating: {rating:?}"),
     }
     Ok(app)
 }

@@ -115,6 +115,8 @@ also sends the rating (or `general` if omitted), but does not update other app
 metadata. The rating is applied before the version is published, so it may
 change even if the subsequent publish fails. `maypop info` shows the rating in
 force, which may differ from the declaration when Maypop has reviewed the app.
+If the server does not yet support content ratings, the CLI warns; apply or
+publish again after support is available to send the declaration.
 
 When this file exists before `maypop init`, its name, description, and
 visibility seed the new remote app. Explicit `--name`, `--description`, and

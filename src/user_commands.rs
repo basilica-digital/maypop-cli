@@ -124,6 +124,7 @@ fn resolve_initial_app(
         }
     });
     app.allow_remixing.get_or_insert(true);
+    app.content_rating.get_or_insert_default();
     app.tags.get_or_insert_with(Vec::new);
     if app.name.is_none() {
         bail!("could not infer an app name; pass --name or set app.name in maypop.toml");

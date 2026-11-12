@@ -58,6 +58,31 @@ struct ProjectConfig {
 }
 
 /// App metadata that can be applied explicitly with `maypop app apply`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ContentRating {
+    #[default]
+    General,
+    Mature,
+}
+
+impl ContentRating {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "general" => Ok(Self::General),
+            "mature" => Ok(Self::Mature),
+            _ => bail!("maypop.toml app.content_rating must be general or mature, got {value:?}"),
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::Mature => "mature",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AppConfig {
     pub(crate) name: Option<String>,
@@ -65,6 +90,7 @@ pub(crate) struct AppConfig {
     pub(crate) visibility: Option<String>,
     pub(crate) link_access: Option<String>,
     pub(crate) allow_remixing: Option<bool>,
+    pub(crate) content_rating: Option<ContentRating>,
     pub(crate) tags: Option<Vec<String>>,
     pub(crate) thumbnail: Option<PathBuf>,
 }
@@ -343,6 +369,9 @@ fn app_table(app: &AppConfig) -> Table {
     if let Some(allow_remixing) = app.allow_remixing {
         table["allow_remixing"] = value(allow_remixing);
     }
+    if let Some(rating) = app.content_rating {
+        table["content_rating"] = value(rating.as_str());
+    }
     if let Some(tags) = &app.tags {
         let mut array = Array::new();
         for tag in tags {
@@ -425,6 +454,7 @@ fn parse_app_config(document: &DocumentMut) -> Result<Option<AppConfig>> {
         visibility,
         link_access,
         allow_remixing: boolean("allow_remixing")?,
+        content_rating: string("content_rating")?.as_deref().map(ContentRating::parse).transpose()?,
         tags,
         thumbnail,
     }))
@@ -638,6 +668,7 @@ mod tests {
             visibility: Some("private".into()),
             link_access: Some("request".into()),
             allow_remixing: Some(true),
+            content_rating: Some(ContentRating::General),
             tags: Some(vec!["example".into()]),
             thumbnail: None,
         };
@@ -651,6 +682,7 @@ mod tests {
                 "visibility = \"private\"\n",
                 "link_access = \"request\"\n",
                 "allow_remixing = true\n",
+                "content_rating = \"general\"\n",
                 "tags = [\"example\"]\n",
                 "\n[build]\n",
                 "framework = \"rsbuild\"\n",

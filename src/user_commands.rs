@@ -48,6 +48,8 @@ struct AppInfo {
     visibility: String,
     link_access: String,
     allow_remixing: bool,
+    #[serde(default)]
+    content_rating: Option<String>,
     tags: Vec<String>,
     thumbnail_cid: Option<String>,
     latest_version: i32,
@@ -213,6 +215,9 @@ pub(crate) async fn publish(
     let app_id = required_git_config(&repository, APP_ID_KEY)?;
     let api_url = required_git_config(&repository, API_URL_KEY)?;
     project::create_config(&repository, None)?;
+    let rating = project::app_config(&repository)?
+        .and_then(|config| config.content_rating)
+        .unwrap_or_default();
     let token = required_token(&api_url, profile, explicit_token)?;
     let http = client(Some(&token))?;
     let user = current_user(&http, &api_url).await?;
@@ -270,6 +275,14 @@ pub(crate) async fn publish(
         build.routing,
     )
     .await?;
+    let response = http_request::json(
+        http.put(format!("{}/cli/apps/{app_id}", trim_url(&api_url))),
+        &json!({"contentRating": rating}),
+    )?
+    .send()
+    .await
+    .context("could not apply the content rating before publishing")?;
+    successful_json::<AppInfo>(response).await?;
     let response = http_request::json(
         http.post(format!("{}/cli/apps/{app_id}/publish", trim_url(&api_url))),
         &json!({
@@ -385,6 +398,9 @@ pub(crate) async fn apply(profile: Option<&str>, explicit_token: Option<&str>) -
     }
     if let Some(allow_remixing) = config.allow_remixing {
         fields.insert("allowRemixing".into(), allow_remixing.into());
+    }
+    if let Some(rating) = config.content_rating {
+        fields.insert("contentRating".into(), serde_json::to_value(rating)?);
     }
     if let Some(tags) = config.tags {
         fields.insert("tags".into(), serde_json::to_value(tags)?);
@@ -1008,6 +1024,10 @@ fn print_app_info(app: &AppInfo, api_url: &str) {
     println!("Visibility: {}", app.visibility);
     println!("Link access: {}", app.link_access);
     println!(
+        "Content rating: {}",
+        app.content_rating.as_deref().unwrap_or("unknown")
+    );
+    println!(
         "Allow remixing: {}",
         if app.allow_remixing { "yes" } else { "no" }
     );
@@ -1047,6 +1067,7 @@ mod tests {
             visibility: Some("unlisted".into()),
             link_access: Some("use".into()),
             allow_remixing: Some(false),
+            content_rating: Some(project::ContentRating::Mature),
             tags: Some(vec!["design".into()]),
             thumbnail: Some("assets/thumbnail.png".into()),
         };
@@ -1071,6 +1092,7 @@ mod tests {
             visibility: Some("unlisted".into()),
             link_access: Some("view".into()),
             allow_remixing: Some(false),
+            content_rating: None,
             tags: Some(vec!["design".into()]),
             thumbnail: None,
         };

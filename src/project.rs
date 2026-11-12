@@ -454,7 +454,10 @@ fn parse_app_config(document: &DocumentMut) -> Result<Option<AppConfig>> {
         visibility,
         link_access,
         allow_remixing: boolean("allow_remixing")?,
-        content_rating: string("content_rating")?.as_deref().map(ContentRating::parse).transpose()?,
+        content_rating: string("content_rating")?
+            .as_deref()
+            .map(ContentRating::parse)
+            .transpose()?,
         tags,
         thumbnail,
     }))
@@ -726,5 +729,37 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn content_rating_accepts_known_values_and_rejects_unknown_values() {
+        for (raw, expected) in [
+            ("general", ContentRating::General),
+            ("mature", ContentRating::Mature),
+        ] {
+            let document = format!("[app]\ncontent_rating = \"{raw}\"\n")
+                .parse()
+                .unwrap();
+            assert_eq!(
+                parse_app_config(&document).unwrap().unwrap().content_rating,
+                Some(expected)
+            );
+        }
+        let document = "[app]\ncontent_rating = \"adult\"\n".parse().unwrap();
+        let error = parse_app_config(&document).unwrap_err().to_string();
+        assert!(
+            error.contains("app.content_rating must be general or mature"),
+            "{error}"
+        );
+        let document = "[app]\ncontent_rating = 18\n".parse().unwrap();
+        assert!(parse_app_config(&document)
+            .unwrap_err()
+            .to_string()
+            .contains("app.content_rating must be a string"));
+        let document = "[app]\nname = \"app\"\n".parse().unwrap();
+        assert_eq!(
+            parse_app_config(&document).unwrap().unwrap().content_rating,
+            None
+        );
     }
 }

@@ -509,7 +509,7 @@ pub(crate) fn git_credential(operation: &str, api_url: &str, profile: Option<&st
         (std::env::var("MAYPOP_TOKEN"), std::env::var("MAYPOP_URL"))
     {
         if api_urls_match(&configured_url, api_url)
-            && path.trim_start_matches('/').starts_with("git/")
+            && credential_path_matches_git(&path)
         {
             println!("username=maypop");
             println!("password={token}");
@@ -526,6 +526,10 @@ pub(crate) fn git_credential(operation: &str, api_url: &str, profile: Option<&st
     println!("username=maypop");
     println!("password={}", saved.token);
     Ok(())
+}
+
+fn credential_path_matches_git(path: &str) -> bool {
+    path.trim_start_matches('/').starts_with("git/")
 }
 
 async fn current_user(client: &Client, api_url: &str) -> Result<CredentialUser> {

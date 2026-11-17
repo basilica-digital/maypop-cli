@@ -915,7 +915,7 @@ fn required_app_id(repository: &Path) -> Result<uuid::Uuid> {
 
 fn required_git_config(repository: &Path, key: &str) -> Result<String> {
     git_config(repository, key)?.with_context(|| {
-        "this repository is not connected to Maypop; run `maypop init`".to_string()
+        format!("this repository is missing Git config `{key}`; run `maypop init`")
     })
 }
 
@@ -1105,6 +1105,7 @@ mod tests {
     fn checkout_app_id_must_be_a_uuid() {
         let directory = temp_git_repo();
         for value in [
+            "",
             "../me",
             "app/publish",
             "?admin=true",

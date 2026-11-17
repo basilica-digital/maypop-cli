@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- Reject invalid app IDs in Git configuration and prevent token overrides from being sent to an unrecognized API origin unless that URL is explicitly passed on the command line.
+
 ## 0.7.0 - 2026-11-12
 
 ### Added

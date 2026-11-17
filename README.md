@@ -82,7 +82,9 @@ The default binary has eleven product commands:
 - `maypop profile` lists saved profiles and selects the default.
 
 The credential helper reads the matching profile and only answers for that
-account's path on the configured Maypop Git host. The token is not embedded in
+account's path on the configured Maypop Git host. It returns nothing for any
+other scheme, host or port; with `MAYPOP_TOKEN` and `MAYPOP_URL` set, it answers
+only for `MAYPOP_URL`'s origin. The token is not embedded in
 the remote URL or `.git/config`. Use `maypop publish` for release pushes. It
 pushes a normal Git pack to the app repository.
 
@@ -168,6 +170,15 @@ Repositories keep their API URL in local Git configuration, so `publish`,
 `info`, and `app apply` automatically find a profile for that URL even when a
 different profile is the default. An explicit `--profile` must match the
 repository's API URL.
+
+Token overrides (`--token` or `MAYPOP_TOKEN`) are sent only to the default API
+origin or an origin with a saved profile. To use a token with another server,
+also pass `--api-url <URL>` (an alias for `--url`) on that command. The URL must
+match the server the command uses; `MAYPOP_URL` alone does not grant this
+exception. Origins include the scheme and port as well as the host.
+
+Connected repositories must have a UUID in Git config `maypop.app-id`.
+Commands reject invalid IDs before building app request paths.
 
 The production API is used when the initial `default` profile is created with
 plain `maypop auth`.

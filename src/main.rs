@@ -13,7 +13,7 @@ mod user_commands;
 #[cfg(feature = "admin")]
 use anyhow::bail;
 use anyhow::Result;
-use clap::Parser;
+use clap::{parser::ValueSource, CommandFactory, FromArgMatches};
 use commands::*;
 #[cfg(feature = "admin")]
 use reqwest::header;
@@ -32,12 +32,18 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<()> {
+    let matches = Cli::command().get_matches();
+    let explicit_url = matches.value_source("url") == Some(ValueSource::CommandLine);
     let Cli {
         url,
         profile,
         token,
         command,
-    } = Cli::parse();
+    } = Cli::from_arg_matches(&matches)?;
+    let token = token.as_deref().map(|token| credentials::TokenOverride {
+        token,
+        explicit_url: explicit_url.then_some(url.as_deref()).flatten(),
+    });
     let profile_name = credentials::selected_profile(profile.as_deref())?;
     match command {
         Commands::Auth {
@@ -67,7 +73,7 @@ async fn run() -> Result<()> {
                 endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
             user_commands::init(
                 &api_url,
-                token.as_deref(),
+                token,
                 selected_profile,
                 &path,
                 name.as_deref(),
@@ -87,29 +93,20 @@ async fn run() -> Result<()> {
             let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
             let selected_profile =
                 endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
-            references::import(
-                &api_url,
-                selected_profile,
-                token.as_deref(),
-                app_id,
-                &path,
-                stdin,
-            )
-            .await
+            references::import(&api_url, selected_profile, token, app_id, &path, stdin).await
         }
         Commands::Publish { changelog } => {
-            user_commands::publish(profile.as_deref(), token.as_deref(), changelog.as_deref()).await
+            user_commands::publish(profile.as_deref(), token, changelog.as_deref()).await
         }
-        Commands::Migrate => user_commands::migrate(profile.as_deref(), token.as_deref()).await,
-        Commands::Info => user_commands::info(profile.as_deref(), token.as_deref()).await,
+        Commands::Migrate => user_commands::migrate(profile.as_deref(), token).await,
+        Commands::Info => user_commands::info(profile.as_deref(), token).await,
         Commands::App {
             command: AppCommands::Apply,
-        } => user_commands::apply(profile.as_deref(), token.as_deref()).await,
+        } => user_commands::apply(profile.as_deref(), token).await,
         Commands::Data { app, json, command } => {
             let selected_profile =
                 endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
-            let session =
-                data::open_session(selected_profile, url.as_deref(), token.as_deref(), app)?;
+            let session = data::open_session(selected_profile, url.as_deref(), token, app)?;
             match command {
                 DataCommands::Kv { command } => match command {
                     KvCommands::Ls {
@@ -157,7 +154,7 @@ async fn run() -> Result<()> {
             let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
             let selected_profile =
                 endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
-            user_commands::status(&api_url, selected_profile, token.as_deref()).await
+            user_commands::status(&api_url, selected_profile, token).await
         }
         Commands::Ai { command } => {
             let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
@@ -174,7 +171,7 @@ async fn run() -> Result<()> {
                     ai::generate_image(
                         &api_url,
                         selected_profile,
-                        token.as_deref(),
+                        token,
                         &prompt,
                         &output,
                         tier.as_str(),
@@ -192,7 +189,7 @@ async fn run() -> Result<()> {
                     ai::generate_audio(
                         &api_url,
                         selected_profile,
-                        token.as_deref(),
+                        token,
                         &prompt,
                         &output,
                         format.map(AudioFormat::as_str),
@@ -214,7 +211,7 @@ async fn run() -> Result<()> {
                     ai::generate_video(
                         &api_url,
                         selected_profile,
-                        token.as_deref(),
+                        token,
                         &prompt,
                         &output,
                         model.as_str(),
@@ -234,7 +231,7 @@ async fn run() -> Result<()> {
                 let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
                 let selected_profile =
                     endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
-                mcp::list(&api_url, selected_profile, token.as_deref(), json).await
+                mcp::list(&api_url, selected_profile, token, json).await
             }
             McpCommands::Connect {
                 name,
@@ -247,7 +244,7 @@ async fn run() -> Result<()> {
                 mcp::connect(
                     &api_url,
                     selected_profile,
-                    token.as_deref(),
+                    token,
                     &name,
                     &server_url,
                     &header_env,
@@ -258,7 +255,7 @@ async fn run() -> Result<()> {
                 let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
                 let selected_profile =
                     endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
-                mcp::disconnect(&api_url, selected_profile, token.as_deref(), &integration).await
+                mcp::disconnect(&api_url, selected_profile, token, &integration).await
             }
             McpCommands::Tools {
                 integration,
@@ -266,19 +263,12 @@ async fn run() -> Result<()> {
                 json,
             } => {
                 if app {
-                    mcp::app_tools(profile.as_deref(), token.as_deref(), &integration, json).await
+                    mcp::app_tools(profile.as_deref(), token, &integration, json).await
                 } else {
                     let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
                     let selected_profile =
                         endpoint_profile(profile.as_deref(), url.as_deref(), &profile_name);
-                    mcp::tools(
-                        &api_url,
-                        selected_profile,
-                        token.as_deref(),
-                        &integration,
-                        json,
-                    )
-                    .await
+                    mcp::tools(&api_url, selected_profile, token, &integration, json).await
                 }
             }
             McpCommands::Call {
@@ -288,14 +278,7 @@ async fn run() -> Result<()> {
                 app,
             } => {
                 if app {
-                    mcp::app_call(
-                        profile.as_deref(),
-                        token.as_deref(),
-                        &integration,
-                        &tool,
-                        &arguments,
-                    )
-                    .await
+                    mcp::app_call(profile.as_deref(), token, &integration, &tool, &arguments).await
                 } else {
                     let api_url = credentials::api_url_for(&profile_name, url.as_deref())?;
                     let selected_profile =
@@ -303,7 +286,7 @@ async fn run() -> Result<()> {
                     mcp::call(
                         &api_url,
                         selected_profile,
-                        token.as_deref(),
+                        token,
                         &integration,
                         &tool,
                         &arguments,
@@ -311,14 +294,12 @@ async fn run() -> Result<()> {
                     .await
                 }
             }
-            McpCommands::Linked { json } => {
-                mcp::linked(profile.as_deref(), token.as_deref(), json).await
-            }
+            McpCommands::Linked { json } => mcp::linked(profile.as_deref(), token, json).await,
             McpCommands::Link { integration } => {
-                mcp::link(profile.as_deref(), token.as_deref(), &integration).await
+                mcp::link(profile.as_deref(), token, &integration).await
             }
             McpCommands::Unlink { integration } => {
-                mcp::unlink(profile.as_deref(), token.as_deref(), &integration).await
+                mcp::unlink(profile.as_deref(), token, &integration).await
             }
         },
         Commands::Profile {
@@ -374,11 +355,11 @@ fn list_profiles() -> Result<()> {
 async fn run_admin(
     url: &str,
     profile: Option<&str>,
-    token_override: Option<String>,
+    token_override: Option<credentials::TokenOverride<'_>>,
     command: Commands,
 ) -> Result<()> {
     let token = match token_override {
-        Some(token) => Some(token),
+        Some(token) => Some(token.for_api(url)?.to_string()),
         None => credentials::token_for(url, profile)?,
     };
     let mut headers = header::HeaderMap::new();

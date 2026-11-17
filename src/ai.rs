@@ -1,5 +1,6 @@
 //! Authenticated media generation commands.
 
+use crate::credentials::TokenOverride;
 use crate::http as http_request;
 use crate::user_commands::{client, required_token, successful_json};
 use anyhow::{bail, Context, Result};
@@ -34,7 +35,7 @@ struct VideoResponse {
 pub(crate) async fn generate_image(
     api_url: &str,
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     prompt: &str,
     output: &Path,
     tier: &str,
@@ -73,7 +74,7 @@ pub(crate) async fn generate_image(
 pub(crate) async fn generate_audio(
     api_url: &str,
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     prompt: &str,
     output: &Path,
     requested_format: Option<&str>,
@@ -109,7 +110,7 @@ pub(crate) async fn generate_audio(
 pub(crate) async fn generate_video(
     api_url: &str,
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     prompt: &str,
     output: &Path,
     model: &str,
@@ -151,7 +152,7 @@ pub(crate) async fn generate_video(
 fn account_client(
     api_url: &str,
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
 ) -> Result<reqwest::Client> {
     let token = required_token(api_url, profile, explicit_token)?;
     client(Some(&token))

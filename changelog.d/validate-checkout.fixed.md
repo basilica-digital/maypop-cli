@@ -1,1 +1,1 @@
-Reject invalid app IDs in Git configuration and prevent token overrides from being sent to an unrecognized API origin unless that URL is explicitly passed on the command line.
+Reject invalid app IDs in Git configuration and prevent token overrides from being sent to an unrecognized API origin unless that URL is explicitly passed on the command line. The Git credential helper answers only for the origin of the API it is configured for (`MAYPOP_URL` with `MAYPOP_TOKEN`, otherwise the saved login).

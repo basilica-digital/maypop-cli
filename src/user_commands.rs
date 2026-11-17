@@ -502,15 +502,18 @@ pub(crate) fn git_credential(operation: &str, api_url: &str, profile: Option<&st
     }
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
-    let Some((_git_url, path)) = credential_request(&input) else {
+    let Some((git_url, path)) = credential_request(&input) else {
         return Ok(());
     };
+    // `api_url` is MAYPOP_URL when the environment token applies below, and
+    // the saved login's origin otherwise; any other origin gets nothing.
+    if !api_urls_match(&git_url, api_url) {
+        return Ok(());
+    }
     if let (Ok(token), Ok(configured_url)) =
         (std::env::var("MAYPOP_TOKEN"), std::env::var("MAYPOP_URL"))
     {
-        if api_urls_match(&configured_url, api_url)
-            && credential_path_matches_git(&path)
-        {
+        if api_urls_match(&configured_url, api_url) && credential_path_matches_git(&path) {
             println!("username=maypop");
             println!("password={token}");
             return Ok(());

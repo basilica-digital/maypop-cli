@@ -82,7 +82,9 @@ The default binary has eleven product commands:
 - `maypop profile` lists saved profiles and selects the default.
 
 The credential helper reads the matching profile and only answers for that
-account's path on the configured Maypop Git host. The token is not embedded in
+account's path on the configured Maypop Git host. It returns nothing for any
+other scheme, host or port; with `MAYPOP_TOKEN` and `MAYPOP_URL` set, it answers
+only for `MAYPOP_URL`'s origin. The token is not embedded in
 the remote URL or `.git/config`. Use `maypop publish` for release pushes. It
 pushes a normal Git pack to the app repository.
 

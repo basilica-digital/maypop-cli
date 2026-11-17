@@ -4,7 +4,7 @@
 //! one names a single key or file.
 
 use crate::bundle_upload::upload_confirmed_file;
-use crate::credentials::{self, api_urls_match};
+use crate::credentials::{self, api_urls_match, TokenOverride};
 use crate::http::{self, failure};
 use crate::user_commands::{client, connected_checkout, required_token};
 use anyhow::{anyhow, bail, Context, Result};
@@ -66,7 +66,7 @@ pub(crate) enum DriveRemoveOutcome {
 pub(crate) fn open_session(
     profile: Option<&str>,
     explicit_url: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     app: Option<uuid::Uuid>,
 ) -> Result<Session> {
     let (app_id, api_url) = match connected_checkout()? {
@@ -76,7 +76,7 @@ pub(crate) fn open_session(
                     bail!("--url does not match this repository's Maypop server ({api_url})");
                 }
             }
-            (app.map(|id| id.to_string()).unwrap_or(app_id), api_url)
+            (app.unwrap_or(app_id).to_string(), api_url)
         }
         None => {
             let Some(app) = app else {

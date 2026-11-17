@@ -1,6 +1,6 @@
 //! User-facing app workflows built around a normal local Git repository.
 
-use crate::credentials::{self, api_origin, api_urls_match, CredentialUser};
+use crate::credentials::{self, api_origin, api_urls_match, CredentialUser, TokenOverride};
 use crate::http as http_request;
 use crate::{bundle_upload, project};
 use anyhow::{bail, Context, Result};
@@ -64,7 +64,7 @@ fn deserialize_present_rating<'de, D: serde::Deserializer<'de>>(
 
 pub(crate) struct AppConnection {
     repository: PathBuf,
-    pub(crate) app_id: String,
+    pub(crate) app_id: uuid::Uuid,
     pub(crate) api_url: String,
     pub(crate) http: Client,
 }
@@ -85,10 +85,10 @@ pub(crate) fn client(token: Option<&str>) -> Result<Client> {
 pub(crate) fn required_token(
     api_url: &str,
     profile: Option<&str>,
-    explicit: Option<&str>,
+    explicit: Option<TokenOverride<'_>>,
 ) -> Result<String> {
     if let Some(token) = explicit {
-        return Ok(token.to_string());
+        return Ok(token.for_api(api_url)?.to_string());
     }
     credentials::token_for(api_url, profile)?.with_context(|| match profile {
         Some(profile) => {
@@ -143,7 +143,7 @@ fn resolve_initial_app(
 /// Create an app identity and connect the selected directory to Maypop Git.
 pub(crate) async fn init(
     api_url: &str,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     profile: Option<&str>,
     path: &Path,
     name: Option<&str>,
@@ -214,11 +214,11 @@ pub(crate) async fn init(
 /// Push the current Git HEAD and promote that exact commit as a new app version.
 pub(crate) async fn publish(
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     changelog: Option<&str>,
 ) -> Result<()> {
     let repository = repository_root(std::env::current_dir()?)?;
-    let app_id = required_git_config(&repository, APP_ID_KEY)?;
+    let app_id = required_app_id(&repository)?.to_string();
     let api_url = required_git_config(&repository, API_URL_KEY)?;
     project::create_config(&repository, None)?;
     let rating = project::app_config(&repository)?
@@ -316,9 +316,12 @@ pub(crate) async fn publish(
 }
 
 /// Move a retired Maypop remote onto the app repository and push `HEAD`.
-pub(crate) async fn migrate(profile: Option<&str>, explicit_token: Option<&str>) -> Result<()> {
+pub(crate) async fn migrate(
+    profile: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
+) -> Result<()> {
     let repository = repository_root(std::env::current_dir()?)?;
-    let app_id = required_git_config(&repository, APP_ID_KEY)?;
+    let app_id = required_app_id(&repository)?.to_string();
     let api_url = required_git_config(&repository, API_URL_KEY)?;
     let token = required_token(&api_url, profile, explicit_token)?;
     let http = client(Some(&token))?;
@@ -367,7 +370,10 @@ fn web_app_url(api_url: &str, app_id: &str) -> Option<String> {
 }
 
 /// Show the connected app without changing local or remote state.
-pub(crate) async fn info(profile: Option<&str>, explicit_token: Option<&str>) -> Result<()> {
+pub(crate) async fn info(
+    profile: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
+) -> Result<()> {
     let connection = app_connection(profile, explicit_token)?;
     let response = connection
         .http
@@ -385,7 +391,10 @@ pub(crate) async fn info(profile: Option<&str>, explicit_token: Option<&str>) ->
 }
 
 /// Apply the declarative `[app]` metadata to the connected app.
-pub(crate) async fn apply(profile: Option<&str>, explicit_token: Option<&str>) -> Result<()> {
+pub(crate) async fn apply(
+    profile: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
+) -> Result<()> {
     let connection = app_connection(profile, explicit_token)?;
     let config = project::app_config(&connection.repository)?
         .context("maypop.toml has no [app] table; add one or run `maypop init` in a new project")?;
@@ -452,7 +461,7 @@ pub(crate) async fn apply(profile: Option<&str>, explicit_token: Option<&str>) -
 pub(crate) async fn status(
     api_url: &str,
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
 ) -> Result<()> {
     let api_url = trim_url(api_url);
     if let Some(profile) = profile {
@@ -467,7 +476,7 @@ pub(crate) async fn status(
     }
 
     let token = match explicit_token {
-        Some(token) => Some(token.to_string()),
+        Some(token) => Some(token.for_api(api_url)?.to_string()),
         None => credentials::token_for(api_url, profile)?,
     };
     let Some(token) = token else {
@@ -531,7 +540,7 @@ async fn current_user(client: &Client, api_url: &str) -> Result<CredentialUser> 
 /// App id and API URL from the checkout `maypop init` configured, when this
 /// directory is one. A normal Git repository that is not a Maypop app yields
 /// `None` so a command can still take `--app`.
-pub(crate) fn connected_checkout() -> Result<Option<(String, String)>> {
+pub(crate) fn connected_checkout() -> Result<Option<(uuid::Uuid, String)>> {
     let cwd = std::env::current_dir().context("could not read the working directory")?;
     let output = git_output(&cwd, &["rev-parse", "--show-toplevel"])?;
     if !output.status.success() {
@@ -544,15 +553,15 @@ pub(crate) fn connected_checkout() -> Result<Option<(String, String)>> {
         return Ok(None);
     };
     let api_url = required_git_config(&repository, API_URL_KEY)?;
-    Ok(Some((app_id, api_url)))
+    Ok(Some((parse_app_id(&app_id)?, api_url)))
 }
 
 pub(crate) fn app_connection(
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
 ) -> Result<AppConnection> {
     let repository = repository_root(std::env::current_dir()?)?;
-    let app_id = required_git_config(&repository, APP_ID_KEY)?;
+    let app_id = required_app_id(&repository)?;
     let api_url = required_git_config(&repository, API_URL_KEY)?;
     let token = required_token(&api_url, profile, explicit_token)?;
     let http = client(Some(&token))?;
@@ -893,6 +902,17 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+fn parse_app_id(value: &str) -> Result<uuid::Uuid> {
+    value
+        .parse()
+        .with_context(|| format!("invalid Git config `{APP_ID_KEY}`: expected a UUID"))
+}
+
+fn required_app_id(repository: &Path) -> Result<uuid::Uuid> {
+    let value = required_git_config(repository, APP_ID_KEY)?;
+    parse_app_id(&value)
+}
+
 fn required_git_config(repository: &Path, key: &str) -> Result<String> {
     git_config(repository, key)?.with_context(|| {
         "this repository is not connected to Maypop; run `maypop init`".to_string()
@@ -1079,6 +1099,75 @@ mod tests {
     use std::sync::Mutex;
 
     static CREDENTIAL_CONFIG: Mutex<()> = Mutex::new(());
+
+    // Guards against a writable checkout app id changing API paths.
+    #[test]
+    fn checkout_app_id_must_be_a_uuid() {
+        let directory = temp_git_repo();
+        for value in [
+            "../me",
+            "app/publish",
+            "?admin=true",
+            "#fragment",
+            "not-a-uuid",
+        ] {
+            run_git(&directory, &["config", "--local", APP_ID_KEY, value]).unwrap();
+            let error = required_app_id(&directory).unwrap_err();
+            assert!(error.to_string().contains(APP_ID_KEY));
+        }
+        let id = uuid::Uuid::new_v4();
+        run_git(
+            &directory,
+            &[
+                "config",
+                "--local",
+                APP_ID_KEY,
+                &id.to_string().to_uppercase(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(required_app_id(&directory).unwrap(), id);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    // Guards against sending token overrides to an API origin changed in Git config.
+    #[test]
+    fn token_override_requires_a_recognized_or_explicit_api_origin() {
+        with_saved_profiles(|| {
+            let api = "https://api.example.com";
+            let token = TokenOverride {
+                token: "test-token",
+                explicit_url: None,
+            };
+            assert!(required_token(api, None, Some(token)).is_err());
+            assert_eq!(
+                required_token(credentials::DEFAULT_API_URL, None, Some(token)).unwrap(),
+                token.token
+            );
+            let explicit = TokenOverride {
+                explicit_url: Some(api),
+                ..token
+            };
+            assert_eq!(
+                required_token(api, None, Some(explicit)).unwrap(),
+                token.token
+            );
+            assert!(required_token("https://other.example.com", None, Some(explicit)).is_err());
+
+            credentials::save("test", example_login(api, "saved-token", "user")).unwrap();
+            assert_eq!(
+                required_token("https://API.example.com:443/", None, Some(token)).unwrap(),
+                token.token
+            );
+            for other in [
+                "http://api.example.com",
+                "https://api.example.com:444",
+                "https://other.example.com",
+            ] {
+                assert!(required_token(other, None, Some(token)).is_err());
+            }
+        });
+    }
 
     #[test]
     fn init_uses_configured_app_metadata() {

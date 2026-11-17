@@ -11,6 +11,30 @@ use url::Url;
 pub(crate) const DEFAULT_API_URL: &str = "https://api.app.maypop.ai";
 const FALLBACK_PROFILE: &str = "default";
 
+/// A token override with the API URL explicitly chosen on the command line.
+#[derive(Clone, Copy)]
+pub(crate) struct TokenOverride<'a> {
+    pub(crate) token: &'a str,
+    pub(crate) explicit_url: Option<&'a str>,
+}
+
+impl TokenOverride<'_> {
+    /// Return the token only for an explicitly selected or recognized API origin.
+    pub(crate) fn for_api(&self, api_url: &str) -> Result<&str> {
+        if api_urls_match(api_url, DEFAULT_API_URL)
+            || self
+                .explicit_url
+                .is_some_and(|url| api_urls_match(api_url, url))
+            || !all_for(api_url)?.is_empty()
+        {
+            return Ok(self.token);
+        }
+        bail!(
+            "refusing to send a token override to an unrecognized API host; sign in with `maypop --url <url> auth` or explicitly pass --api-url <url> with the token"
+        )
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Credentials {

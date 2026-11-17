@@ -9,7 +9,13 @@ use std::path::PathBuf;
 #[command(about = "Build and manage Maypop apps", long_about = None)]
 pub(crate) struct Cli {
     /// Base URL override for the Maypop backend
-    #[arg(short, long, env = "MAYPOP_URL", global = true)]
+    #[arg(
+        short,
+        long,
+        visible_alias = "api-url",
+        env = "MAYPOP_URL",
+        global = true
+    )]
     pub(crate) url: Option<String>,
 
     /// Named profile to use instead of the configured default

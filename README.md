@@ -169,6 +169,15 @@ Repositories keep their API URL in local Git configuration, so `publish`,
 different profile is the default. An explicit `--profile` must match the
 repository's API URL.
 
+Token overrides (`--token` or `MAYPOP_TOKEN`) are sent only to the default API
+origin or an origin with a saved profile. To use a token with another server,
+also pass `--api-url <URL>` (an alias for `--url`) on that command. The URL must
+match the server the command uses; `MAYPOP_URL` alone does not grant this
+exception. Origins include the scheme and port as well as the host.
+
+Connected repositories must have a UUID in Git config `maypop.app-id`.
+Commands reject invalid IDs before building app request paths.
+
 The production API is used when the initial `default` profile is created with
 plain `maypop auth`.
 

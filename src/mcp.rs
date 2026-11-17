@@ -1,5 +1,6 @@
 //! Authenticated MCP connection and app-link management.
 
+use crate::credentials::TokenOverride;
 use crate::http as http_request;
 use crate::user_commands::{app_connection, client, required_token, successful_json};
 use anyhow::{bail, Context, Result};
@@ -66,7 +67,7 @@ impl IntegrationIdentity for AppIntegration {
 pub(crate) async fn list(
     api_url: &str,
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     json_output: bool,
 ) -> Result<()> {
     let http = account_client(api_url, profile, explicit_token)?;
@@ -78,7 +79,7 @@ pub(crate) async fn list(
 pub(crate) async fn connect(
     api_url: &str,
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     name: &str,
     server_url: &str,
     header_env: &[String],
@@ -105,7 +106,7 @@ pub(crate) async fn connect(
 pub(crate) async fn disconnect(
     api_url: &str,
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     selector: &str,
 ) -> Result<()> {
     let http = account_client(api_url, profile, explicit_token)?;
@@ -128,7 +129,7 @@ pub(crate) async fn disconnect(
 pub(crate) async fn tools(
     api_url: &str,
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     selector: &str,
     json_output: bool,
 ) -> Result<()> {
@@ -150,7 +151,7 @@ pub(crate) async fn tools(
 pub(crate) async fn call(
     api_url: &str,
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     selector: &str,
     tool: &str,
     arguments: &str,
@@ -175,7 +176,7 @@ pub(crate) async fn call(
 /// List MCP servers linked to the app in the current repository.
 pub(crate) async fn linked(
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     json_output: bool,
 ) -> Result<()> {
     let connection = app_connection(profile, explicit_token)?;
@@ -187,7 +188,7 @@ pub(crate) async fn linked(
 /// Print tool documentation through the integration linked to the current app.
 pub(crate) async fn app_tools(
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     selector: &str,
     json_output: bool,
 ) -> Result<()> {
@@ -210,7 +211,7 @@ pub(crate) async fn app_tools(
 /// Invoke a tool through the integration linked to the current app.
 pub(crate) async fn app_call(
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     selector: &str,
     tool: &str,
     arguments: &str,
@@ -237,7 +238,7 @@ pub(crate) async fn app_call(
 /// Link one of the authenticated user's MCP servers to the current app.
 pub(crate) async fn link(
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     selector: &str,
 ) -> Result<()> {
     let connection = app_connection(profile, explicit_token)?;
@@ -262,7 +263,7 @@ pub(crate) async fn link(
 /// Unlink an MCP server from the current app without disconnecting the account connection.
 pub(crate) async fn unlink(
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
     selector: &str,
 ) -> Result<()> {
     let connection = app_connection(profile, explicit_token)?;
@@ -289,7 +290,7 @@ pub(crate) async fn unlink(
 fn account_client(
     api_url: &str,
     profile: Option<&str>,
-    explicit_token: Option<&str>,
+    explicit_token: Option<TokenOverride<'_>>,
 ) -> Result<reqwest::Client> {
     let token = required_token(api_url, profile, explicit_token)?;
     client(Some(&token))
@@ -307,7 +308,7 @@ async fn list_personal(http: &reqwest::Client, api_url: &str) -> Result<Vec<User
 async fn list_linked(
     http: &reqwest::Client,
     api_url: &str,
-    app_id: &str,
+    app_id: &uuid::Uuid,
 ) -> Result<Vec<AppIntegration>> {
     let response = http
         .get(format!("{}/apps/{app_id}/integrations", trim_url(api_url)))

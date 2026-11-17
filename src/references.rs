@@ -5,6 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::credentials::TokenOverride;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -33,7 +34,7 @@ struct ReferenceFile {
 pub(crate) async fn import(
     api_url: &str,
     profile: Option<&str>,
-    token: Option<&str>,
+    token: Option<TokenOverride<'_>>,
     app_id: Uuid,
     repository: &Path,
     stdin: bool,

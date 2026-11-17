@@ -19,12 +19,13 @@ fn apply_sends_the_declaration_and_shows_the_rating_in_force() {
     };
     git(&["init", "-q"]);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    git(&["config", "maypop.app-id", "app-id"]);
     git(&[
         "config",
-        "maypop.api-url",
-        &format!("http://{}", listener.local_addr().unwrap()),
+        "maypop.app-id",
+        "11111111-1111-4111-8111-111111111111",
     ]);
+    let api_url = format!("http://{}", listener.local_addr().unwrap());
+    git(&["config", "maypop.api-url", &api_url]);
     std::fs::write(
         directory.join("maypop.toml"),
         "[app]\ncontent_rating = \"general\"\n",
@@ -57,12 +58,12 @@ fn apply_sends_the_declaration_and_shows_the_rating_in_force() {
             assert_ne!(n, 0);
         }
         let request = String::from_utf8(bytes).unwrap();
-        let body = r#"{"id":"app-id","name":"Example","description":null,"visibility":"private","linkAccess":"request","allowRemixing":true,"contentRating":"mature","tags":[],"thumbnailCid":null,"latestVersion":0,"stableVersion":0}"#;
+        let body = r#"{"id":"11111111-1111-4111-8111-111111111111","name":"Example","description":null,"visibility":"private","linkAccess":"request","allowRemixing":true,"contentRating":"mature","tags":[],"thumbnailCid":null,"latestVersion":0,"stableVersion":0}"#;
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
         request
     });
     let output = Command::new(env!("CARGO_BIN_EXE_maypop"))
-        .args(["app", "apply"])
+        .args(["--api-url", &api_url, "app", "apply"])
         .current_dir(&directory)
         .env("MAYPOP_TOKEN", "test-token")
         .output()
@@ -74,7 +75,7 @@ fn apply_sends_the_declaration_and_shows_the_rating_in_force() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(request.starts_with("PUT /cli/apps/app-id "));
+    assert!(request.starts_with("PUT /cli/apps/11111111-1111-4111-8111-111111111111 "));
     let body = request.split_once("\r\n\r\n").unwrap().1;
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(body).unwrap(),
@@ -84,7 +85,7 @@ fn apply_sends_the_declaration_and_shows_the_rating_in_force() {
 }
 
 fn response_info(rating: Option<&str>) -> String {
-    let mut app = serde_json::json!({"id":"app-id","name":"Example","description":null,"visibility":"private","linkAccess":"request","allowRemixing":true,"tags":[],"thumbnailCid":null,"latestVersion":0,"stableVersion":0});
+    let mut app = serde_json::json!({"id":"11111111-1111-4111-8111-111111111111","name":"Example","description":null,"visibility":"private","linkAccess":"request","allowRemixing":true,"tags":[],"thumbnailCid":null,"latestVersion":0,"stableVersion":0});
     if let Some(rating) = rating {
         app["contentRating"] = rating.into();
     }
@@ -92,6 +93,8 @@ fn response_info(rating: Option<&str>) -> String {
 }
 
 fn read_request(stream: &mut std::net::TcpStream) -> String {
+    // Accepted sockets can inherit the listener's nonblocking mode on macOS.
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -159,12 +162,13 @@ fn legacy_server_warns_for_rating_writes_but_info_remains_readable() {
         };
         git(&["init", "-q"]);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        git(&["config", "maypop.app-id", "app-id"]);
         git(&[
             "config",
-            "maypop.api-url",
-            &format!("http://{}", listener.local_addr().unwrap()),
+            "maypop.app-id",
+            "11111111-1111-4111-8111-111111111111",
         ]);
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
+        git(&["config", "maypop.api-url", &api_url]);
         std::fs::write(directory.join("maypop.toml"), config).unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -173,6 +177,7 @@ fn legacy_server_warns_for_rating_writes_but_info_remains_readable() {
             request
         });
         let output = Command::new(env!("CARGO_BIN_EXE_maypop"))
+            .args(["--url", &api_url])
             .args(command)
             .current_dir(&directory)
             .env("MAYPOP_TOKEN", "test-token")
@@ -239,8 +244,12 @@ fn publish_warns_for_legacy_servers_and_rejects_unexpected_ratings() {
             .success());
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let api = format!("http://{}", listener.local_addr().unwrap());
-        let remote = format!("{api}/git/apps/app-id");
-        git(&["config", "maypop.app-id", "app-id"]);
+        let remote = format!("{api}/git/apps/11111111-1111-4111-8111-111111111111");
+        git(&[
+            "config",
+            "maypop.app-id",
+            "11111111-1111-4111-8111-111111111111",
+        ]);
         git(&["config", "maypop.api-url", &api]);
         git(&["remote", "add", "maypop", &remote]);
         let app = declaration
@@ -266,6 +275,7 @@ fn publish_warns_for_legacy_servers_and_rejects_unexpected_ratings() {
             .unwrap()
             .trim()
             .to_string();
+        let api_url = api.clone();
         let server = std::thread::spawn(move || {
             let mut requests = Vec::new();
             listener.set_nonblocking(true).unwrap();
@@ -289,7 +299,7 @@ fn publish_warns_for_legacy_servers_and_rejects_unexpected_ratings() {
                     1 => r#"{"bundleId":"bundle","files":[]}"#.to_string(),
                     2 => String::new(),
                     3 => response_info(effective),
-                    4 => serde_json::json!({"appId":"app-id","n":1,"sourceCommitSha":expected_sha}).to_string(),
+                    4 => serde_json::json!({"appId":"11111111-1111-4111-8111-111111111111","n":1,"sourceCommitSha":expected_sha}).to_string(),
                     _ => unreachable!(),
                 };
                 respond(&mut stream, &body);
@@ -298,7 +308,7 @@ fn publish_warns_for_legacy_servers_and_rejects_unexpected_ratings() {
             requests
         });
         let output = Command::new(env!("CARGO_BIN_EXE_maypop"))
-            .arg("publish")
+            .args(["publish", "--api-url", &api_url])
             .current_dir(&repository)
             .env("MAYPOP_TOKEN", "test-token")
             .env("TEST_REAL_GIT", real_git)
@@ -327,7 +337,7 @@ fn publish_warns_for_legacy_servers_and_rejects_unexpected_ratings() {
             requests.len(),
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(requests[3].starts_with("PUT /cli/apps/app-id "));
+        assert!(requests[3].starts_with("PUT /cli/apps/11111111-1111-4111-8111-111111111111 "));
         let payload = requests[3].split_once("\r\n\r\n").unwrap().1;
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(payload).unwrap(),
@@ -337,7 +347,8 @@ fn publish_warns_for_legacy_servers_and_rejects_unexpected_ratings() {
             assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected content rating"));
             assert_eq!(requests.len(), 4);
         } else {
-            assert!(requests[4].starts_with("POST /cli/apps/app-id/publish "));
+            assert!(requests[4]
+                .starts_with("POST /cli/apps/11111111-1111-4111-8111-111111111111/publish "));
             let stderr = String::from_utf8_lossy(&output.stderr);
             if effective.is_none() {
                 assert!(stderr.contains("not supported by this server yet"));

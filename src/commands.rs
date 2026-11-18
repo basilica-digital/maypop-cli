@@ -23,7 +23,13 @@ pub(crate) struct Cli {
     pub(crate) profile: Option<String>,
 
     /// Access token override; defaults to the token saved by `maypop auth`
-    #[arg(short, long, env = "MAYPOP_TOKEN", global = true)]
+    #[arg(
+        short,
+        long,
+        env = "MAYPOP_TOKEN",
+        hide_env_values = true,
+        global = true
+    )]
     pub(crate) token: Option<String>,
 
     #[command(subcommand)]

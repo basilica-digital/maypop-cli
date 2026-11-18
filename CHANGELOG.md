@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- Help output names `MAYPOP_TOKEN` without printing its value, so pasted help text cannot leak a token.
+
 ## 0.7.1 - 2026-11-17
 
 ### Fixed
